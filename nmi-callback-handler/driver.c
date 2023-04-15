@@ -15,6 +15,9 @@ EXTERN_C VOID KeInitializeAffinityEx(PKAFFINITY_EX affinity);
 EXTERN_C VOID KeAddProcessorAffinityEx(PKAFFINITY_EX affinity, INT num);
 EXTERN_C VOID HalSendNMI(PKAFFINITY_EX affinity);
 
+typedef NTSTATUS(NTAPI* ZwGetContextThread_t)(IN HANDLE ThreadHandle, OUT PCONTEXT Context);
+ZwGetContextThread_t ZwGetContextThread;
+
 /*
 Thread Information Block: (GS register)
 
@@ -38,7 +41,7 @@ Thread Information Block: (GS register)
 	...
 */
 
-BOOLEAN NmiCallback(PVOID Context, BOOLEAN Handled)
+BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 {
 	UNREFERENCED_PARAMETER(Context);
 	UNREFERENCED_PARAMETER(Handled);
@@ -46,15 +49,28 @@ BOOLEAN NmiCallback(PVOID Context, BOOLEAN Handled)
 	DbgPrint("nmi callback called");
 
 	/*
-	*	GS register holds the address of the Thread Information Block
-	*	We can use the __readgsqword function to read a value by offset
-	*	from the TIB
+	* GS register holds the address of the Thread Information Block
+	* We can use the __readgsqword function to read an address by offset
+	* from the TIB base
 	*/
 
-	PVOID thread_information = __readgsqword(0x30);
-	DbgPrint("TIB address: %p", thread_information);
+	PVOID TEB = (PVOID)__readgsqword(0x30);
+	DbgPrint("TEB address: %p", TEB);
 
-	//__debugbreak();
+	PVOID current_thread = PsGetCurrentThread();
+	DbgPrint("Current thread: %p", current_thread);
+
+	UINT64 start_address = *((UINT64*)((uintptr_t)current_thread + 0x450));
+
+	//base = lower address, limit = top address as stack grows down on windows
+	UINT64 stack_base = *((UINT64*)((uintptr_t)current_thread + 0x030));			
+	UINT64 stack_limit = *((UINT64*)((uintptr_t)current_thread + 0x038));
+
+	DbgPrint("start address: %I64u, stack base: %I64u, stack limit: %I64u", start_address, stack_base, stack_limit);
+
+	//RtlCaptureStackBackTrace or StackWalk can be used to do some stackwalking :3
+
+	__debugbreak();
 
 	return TRUE;
 }
@@ -63,6 +79,11 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 {
 	UNREFERENCED_PARAMETER(RegistryPath);
 	UNREFERENCED_PARAMETER(DriverObject);
+
+
+	UNICODE_STRING usZwGetContextThread;
+	RtlInitUnicodeString(&usZwGetContextThread, L"ZwGetContextThread");
+	ZwGetContextThread = (ZwGetContextThread_t)MmGetSystemRoutineAddress(&usZwGetContextThread);
 
 	//Allocate a pool for our Processor affinity structures
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePoolWithTag(NonPagedPool, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
@@ -83,6 +104,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	//Count cores (NMI's are sent per core)
 	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
 
+	//Iterate over each logical processor to fire NMI
 	for (ULONG core = 0; core < num_cores; core++)
 	{
 		//Initialize our proc affinity for this core and add it to our structure
@@ -97,14 +119,10 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		//Delay sending the NMI to each processor since only 1 NMI can be 
 		//active at any one time
 		KeDelayExecutionThread(KernelMode, FALSE, &delay);
-
 	}
 
-	if (NMICallbackHandle)
-		KeDeregisterNmiCallback(NMICallbackHandle);
-
-	if (ProcAffinityPool)
-		ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
+	KeDeregisterNmiCallback(NMICallbackHandle);
+	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 
 	return STATUS_SUCCESS;
 }
