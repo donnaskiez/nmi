@@ -1,4 +1,7 @@
 #include <ntifs.h>
+#include <intrin.h>
+
+#pragma intrinsic(_ReturnAddress)
 
 #define NMI_CB_POOL_TAG 'BCmN'
 
@@ -14,9 +17,6 @@ typedef struct _KAFFINITY_EX
 EXTERN_C VOID KeInitializeAffinityEx(PKAFFINITY_EX affinity);
 EXTERN_C VOID KeAddProcessorAffinityEx(PKAFFINITY_EX affinity, INT num);
 EXTERN_C VOID HalSendNMI(PKAFFINITY_EX affinity);
-
-typedef NTSTATUS(NTAPI* ZwGetContextThread_t)(IN HANDLE ThreadHandle, OUT PCONTEXT Context);
-ZwGetContextThread_t ZwGetContextThread;
 
 /*
 Thread Information Block: (GS register)
@@ -57,18 +57,19 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	PVOID TEB = (PVOID)__readgsqword(0x30);
 	DbgPrint("TEB address: %p", TEB);
 
-	PVOID current_thread = PsGetCurrentThread();
+	PVOID current_thread = KeGetCurrentThread();
 	DbgPrint("Current thread: %p", current_thread);
 
 	UINT64 start_address = *((UINT64*)((uintptr_t)current_thread + 0x450));
-
-	//base = lower address, limit = top address as stack grows down on windows
 	UINT64 stack_base = *((UINT64*)((uintptr_t)current_thread + 0x030));			
 	UINT64 stack_limit = *((UINT64*)((uintptr_t)current_thread + 0x038));
 
 	DbgPrint("start address: %I64u, stack base: %I64u, stack limit: %I64u", start_address, stack_base, stack_limit);
 
-	//RtlCaptureStackBackTrace or StackWalk can be used to do some stackwalking :3
+	UINT64 previous_rip = _ReturnAddress();
+	DbgPrint("return addr: %I64u", previous_rip);
+
+	//RtlCaptureStackBackTrace can be used to do some stackwalking :3
 
 	__debugbreak();
 
@@ -79,11 +80,6 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 {
 	UNREFERENCED_PARAMETER(RegistryPath);
 	UNREFERENCED_PARAMETER(DriverObject);
-
-
-	UNICODE_STRING usZwGetContextThread;
-	RtlInitUnicodeString(&usZwGetContextThread, L"ZwGetContextThread");
-	ZwGetContextThread = (ZwGetContextThread_t)MmGetSystemRoutineAddress(&usZwGetContextThread);
 
 	//Allocate a pool for our Processor affinity structures
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePoolWithTag(NonPagedPool, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
