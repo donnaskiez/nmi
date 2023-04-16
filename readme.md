@@ -1,3 +1,3 @@
 # NMI Callback Handler
 
-This is a simple project with the goal of exploring what access a non maskable interrupt has to the currently executing thread that was interrupted. The end goal here is to stackwalk the interrupted thread to determine if any return addresses or the thread start address lies within invalid memory regions (manually mapped drivers etc.).
+This is a simple project (WIP) with the goal of exploring how NMIs can be used to stackwalk the interrupted threads to determine if the thread is or has been executing memory from unsigned regions (i.e manually mapped drivers)
