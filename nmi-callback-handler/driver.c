@@ -69,7 +69,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	UINT64 previous_rip = _ReturnAddress();
 	DbgPrint("return addr: %I64u", previous_rip);
 
-	//RtlCaptureStackBackTrace can be used to do some stackwalking :3
+	//RtlCaptureStackBackTrace or RtlVirtualUnwind can be used to do some stackwalking :3
 
 	__debugbreak();
 
@@ -103,7 +103,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	//Iterate over each logical processor to fire NMI
 	for (ULONG core = 0; core < num_cores; core++)
 	{
-		//Initialize our proc affinity for this core and add it to our structure
+		//Bind the interrupted thread to the logical processor its running on
 		KeInitializeAffinityEx(ProcAffinityPool);
 		KeAddProcessorAffinityEx(ProcAffinityPool, core);
 
@@ -117,6 +117,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		KeDelayExecutionThread(KernelMode, FALSE, &delay);
 	}
 
+	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
 	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 
