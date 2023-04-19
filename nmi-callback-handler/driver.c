@@ -18,6 +18,8 @@ EXTERN_C VOID KeInitializeAffinityEx(PKAFFINITY_EX affinity);
 EXTERN_C VOID KeAddProcessorAffinityEx(PKAFFINITY_EX affinity, INT num);
 EXTERN_C VOID HalSendNMI(PKAFFINITY_EX affinity);
 
+PVOID p_stack_frames = NULL;
+
 /*
 Thread Information Block: (GS register)
 
@@ -60,18 +62,30 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	PVOID current_thread = KeGetCurrentThread();
 	DbgPrint("Current thread: %p", current_thread);
 
+	//Start address can be spoofed but still good to check
 	UINT64 start_address = *((UINT64*)((uintptr_t)current_thread + 0x450));
-	UINT64 stack_base = *((UINT64*)((uintptr_t)current_thread + 0x030));			
-	UINT64 stack_limit = *((UINT64*)((uintptr_t)current_thread + 0x038));
 
-	DbgPrint("start address: %I64u, stack base: %I64u, stack limit: %I64u", start_address, stack_base, stack_limit);
+	int num_frames_captured = RtlCaptureStackBackTrace(
+		0,
+		0x400,
+		p_stack_frames,
+		NULL
+	);
 
-	UINT64 previous_rip = _ReturnAddress();
-	DbgPrint("return addr: %I64u", previous_rip);
+	DbgPrint("num frames captured: %i at address: %p", num_frames_captured, p_stack_frames);
 
-	//RtlCaptureStackBackTrace or RtlVirtualUnwind can be used to do some stackwalking :3
+	for (size_t i = 0; i < num_frames_captured; i++)
+	{
+		DWORD64 temp_address = (DWORD64)((uintptr_t)p_stack_frames + i * 8);
 
-	__debugbreak();
+		//RtlCopyMemory(
+		//	&temp_address,
+		//	(uintptr_t)p_stack_frames + i * 8,
+		//	8
+		//);
+
+		DbgPrint("stack: %llx\n", temp_address);
+	}
 
 	return TRUE;
 }
@@ -85,6 +99,12 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePoolWithTag(NonPagedPool, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
 
 	if (!ProcAffinityPool)
+		return STATUS_FAILED_DRIVER_ENTRY;
+
+	//Allocate pool for our stackwalk
+	p_stack_frames = ExAllocatePoolWithTag(NonPagedPool, 0x400, NMI_CB_POOL_TAG);
+
+	if (!p_stack_frames)
 		return STATUS_FAILED_DRIVER_ENTRY;
 
 	//Register our callback
