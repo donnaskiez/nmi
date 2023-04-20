@@ -1,5 +1,11 @@
 #include "driver.h"
 
+NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
+{
+	//Here we can use ZwQuerySystemInformation with SystemModuleInformation to 
+	//numerate loaded drivers
+}
+
 NTSTATUS AnalyseNmiData(_In_ int numCores)
 {	
 	for (int i = 0; i < numCores; i++)
@@ -49,7 +55,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	DbgPrint("nmi callback called\n");
 
 	//must free each pool after each stack frame has been analysed
-	PVOID stack_frames = ExAllocatePoolWithTag(NonPagedPool, 0x200, NMI_CB_POOL_TAG);	
+	PVOID stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, 0x200, NMI_CB_POOL_TAG);
 
 	int num_frames_captured = RtlCaptureStackBackTrace(
 		0,
@@ -90,7 +96,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	UNREFERENCED_PARAMETER(DriverObject);
 
 	//Allocate a pool for our Processor affinity structures
-	PKAFFINITY_EX ProcAffinityPool = ExAllocatePoolWithTag(NonPagedPool, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
+	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
 
 	if (!ProcAffinityPool)
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -104,7 +110,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	//Count cores (NMI's are sent per core)
 	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
 
-	thread_data_pool = ExAllocatePoolWithTag(NonPagedPool, num_cores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
+	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
 
 	if (!thread_data_pool)
 		return STATUS_FAILED_DRIVER_ENTRY;
