@@ -1,61 +1,6 @@
-#include <ntifs.h>
-#include <intrin.h>
+#include "driver.h"
 
-#pragma intrinsic(_ReturnAddress)
-
-#define NMI_CB_POOL_TAG 'BCmN'
-
-typedef struct _KAFFINITY_EX
-{
-	USHORT Count;
-	USHORT Size;
-	ULONG Reserved;
-	ULONGLONG Bitmap[20];
-
-} KAFFINITY_EX, * PKAFFINITY_EX;
-
-typedef struct _NMI_CALLBACK_DATA
-{
-	UINT64	kthread_address;
-	UINT64	start_address;	
-	UINT64	stack_limit;
-	UINT64	stack_base;
-	PVOID	stack_unwind_pool;
-	int		num_frames_captured;
-	UINT64	thread_cr3;
-
-}NMI_CALLBACK_DATA, *PNMI_CALLBACK_DATA;
-
-PVOID thread_data_pool;
-
-EXTERN_C VOID KeInitializeAffinityEx(PKAFFINITY_EX affinity);
-EXTERN_C VOID KeAddProcessorAffinityEx(PKAFFINITY_EX affinity, INT num);
-EXTERN_C VOID HalSendNMI(PKAFFINITY_EX affinity);
-
-/*
-Thread Information Block: (GS register)
-
-	SEH frame:						0x00
-	Stack Base:						0x08
-	Stack Limit:					0x10
-	SubSystemTib:					0x18
-	Fiber Data:						0x20
-	Arbitrary Data:					0x28
-	TEB:							0x30
-	Environment Pointer:			0x38
-	Process ID:						0x40
-	Current Thread ID:				0x48
-	Active RPC Handle:				0x50
-	Thread Local Storage Array:		0x58
-	PEB:							0x60
-	Last error number:				0x68
-	Count Owned Critical Sections:  0x6C
-	CSR Client Thread:				0x70
-	Win32 Thread Information:		0x78
-	...
-*/
-
-NTSTATUS AnalyseStackWalk(_In_ int numCores)
+NTSTATUS AnalyseNmiData(_In_ int numCores)
 {	
 	for (int i = 0; i < numCores; i++)
 	{
@@ -68,7 +13,8 @@ NTSTATUS AnalyseStackWalk(_In_ int numCores)
 		);
 
 		DbgPrint("------------------------\n");
-		DbgPrint("kthread address: %llx", thread_data.kthread_address);
+		DbgPrint("kthread address: %llx\n", thread_data.kthread_address);
+		DbgPrint("kprocess address: %llx\n", thread_data.kprocess_address);
 		DbgPrint("Stack base: %llx\n", thread_data.stack_base);
 		DbgPrint("Stack limit: %llx\n", thread_data.stack_limit);
 		DbgPrint("start address: %llx\n", thread_data.start_address);
@@ -77,6 +23,11 @@ NTSTATUS AnalyseStackWalk(_In_ int numCores)
 		DbgPrint("num frames captured: %i\n", thread_data.num_frames_captured);
 
 		//do stuff
+		//TO DO:
+		//check start address
+		//check if any of the RIPs from the stackwalk lie in unsigned regions
+		//see if anything funky is happening with the threads cr3
+		//??
 
 		//free frame pool
 		ExFreePoolWithTag(thread_data.stack_unwind_pool, NMI_CB_POOL_TAG);
@@ -101,18 +52,16 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	);
 
 	PVOID current_thread = KeGetCurrentThread();
-	DbgPrint("Current thread: %p\n", current_thread);
 
 	NMI_CALLBACK_DATA thread_data = { 0 };
 	thread_data.kthread_address = (UINT64)current_thread;
+	thread_data.kprocess_address = (UINT64)PsGetCurrentProcess();
 	thread_data.stack_base = *((UINT64*)((uintptr_t)current_thread + 0x030));
 	thread_data.stack_limit = *((UINT64*)((uintptr_t)current_thread + 0x038));
 	thread_data.start_address = *((UINT64*)((uintptr_t)current_thread + 0x450));		//can be spoofed but still a decent detection vector
 	thread_data.thread_cr3 = __readcr3();
 	thread_data.stack_unwind_pool = stack_frames;
 	thread_data.num_frames_captured = num_frames_captured;
-
-	DbgPrint("Current stack frame address: %p\n", stack_frames);
 
 	ULONG proc_num = KeGetCurrentProcessorNumber();
 
@@ -147,6 +96,9 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	thread_data_pool = ExAllocatePoolWithTag(NonPagedPool, num_cores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
 
+	if (!thread_data_pool)
+		return STATUS_FAILED_DRIVER_ENTRY;
+
 	//Calculate our delay (200ms currently)
 	LARGE_INTEGER delay = { 0 };
 	delay.QuadPart -= 200 * 10000;
@@ -168,10 +120,15 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		KeDelayExecutionThread(KernelMode, FALSE, &delay);
 	}
 
-	AnalyseStackWalk(num_cores);
+	if (!NT_SUCCESS(AnalyseNmiData(num_cores)))
+	{
+		DbgPrint("Failed to analyse the stack walk");
+		return STATUS_FAILED_DRIVER_ENTRY;
+	}
 
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
+
 	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(thread_data_pool, NMI_CB_POOL_TAG);
 
