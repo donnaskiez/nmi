@@ -18,7 +18,7 @@ NTSTATUS AnalyseNmiData(_In_ int numCores)
 		DbgPrint("Stack base: %llx\n", thread_data.stack_base);
 		DbgPrint("Stack limit: %llx\n", thread_data.stack_limit);
 		DbgPrint("start address: %llx\n", thread_data.start_address);
-		DbgPrint("cr3: %llx\n", thread_data.thread_cr3);
+		DbgPrint("cr3: %llx\n", thread_data.cr3);
 		DbgPrint("stack frame pointer: %p\n", thread_data.stack_unwind_pool);
 		DbgPrint("num frames captured: %i\n", thread_data.num_frames_captured);
 
@@ -28,6 +28,13 @@ NTSTATUS AnalyseNmiData(_In_ int numCores)
 		//check if any of the RIPs from the stackwalk lie in unsigned regions
 		//see if anything funky is happening with the threads cr3
 		//??
+
+		DbgPrint("--STACK WALK--\n");
+		for (int i = 0; i < thread_data.num_frames_captured; i++)
+		{
+			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)thread_data.stack_unwind_pool + i * sizeof(PVOID)));
+			DbgPrint("frame: %llx\n", stack_frame);
+		}
 
 		//free frame pool
 		ExFreePoolWithTag(thread_data.stack_unwind_pool, NMI_CB_POOL_TAG);
@@ -51,6 +58,9 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 		NULL
 	);
 
+	//TODO: need to use the context to increment the callback counter to check if nmis
+	//have been disabled
+
 	PVOID current_thread = KeGetCurrentThread();
 
 	NMI_CALLBACK_DATA thread_data = { 0 };
@@ -59,7 +69,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	thread_data.stack_base = *((UINT64*)((uintptr_t)current_thread + 0x030));
 	thread_data.stack_limit = *((UINT64*)((uintptr_t)current_thread + 0x038));
 	thread_data.start_address = *((UINT64*)((uintptr_t)current_thread + 0x450));		//can be spoofed but still a decent detection vector
-	thread_data.thread_cr3 = __readcr3();
+	thread_data.cr3 = __readcr3();
 	thread_data.stack_unwind_pool = stack_frames;
 	thread_data.num_frames_captured = num_frames_captured;
 

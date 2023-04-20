@@ -28,7 +28,7 @@ typedef struct _NMI_CALLBACK_DATA
 	UINT64	stack_base;
 	PVOID	stack_unwind_pool;
 	int		num_frames_captured;
-	UINT64	thread_cr3;
+	UINT64	cr3;
 
 }NMI_CALLBACK_DATA, * PNMI_CALLBACK_DATA;
 
