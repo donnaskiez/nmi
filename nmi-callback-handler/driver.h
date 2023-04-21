@@ -6,6 +6,7 @@
 
 #define NMI_CB_POOL_TAG 'BCmN'
 #define NUMBER_HASH_BUCKETS 37
+#define ERROR -1
 
 PVOID thread_data_pool;
 

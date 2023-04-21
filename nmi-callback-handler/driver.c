@@ -6,7 +6,7 @@ BOOLEAN ValidateDriverObjectHasBackingModule(
 )
 {
 	if (!ModuleInformation || !DriverObject)
-		return FALSE;
+		return ERROR;
 
 	for (int i = 0; i < ModuleInformation->module_count; i++)
 	{
@@ -180,7 +180,7 @@ BOOLEAN IsInstructionPointerInInvalidRegion(
 )
 {
 	if (!RIP || !SystemModules)
-		return FALSE;
+		return ERROR;
 
 	for (int i = 0; i < SystemModules->module_count; i++)
 	{
@@ -219,7 +219,7 @@ NTSTATUS AnalyseNmiData(
 			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)thread_data.stack_unwind_pool + i * sizeof(PVOID)));
 			BOOLEAN flag = IsInstructionPointerInInvalidRegion(stack_frame, SystemModules);
 
-			if (!flag)
+			if (!flag && flag != ERROR)
 			{
 				DbgPrint("RIP was executing in invalid region: %llx\n", stack_frame);
 			}
@@ -232,6 +232,7 @@ NTSTATUS AnalyseNmiData(
 
 BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 {
+	//TODO need to implement context so we can check if nmis have been disabled
 	UNREFERENCED_PARAMETER(Context);
 	UNREFERENCED_PARAMETER(Handled);
 
