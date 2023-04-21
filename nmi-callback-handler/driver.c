@@ -1,18 +1,23 @@
 #include "driver.h"
 
-BOOLEAN ValidateDriverObjectsHaveBackingModule(_In_ PSYSTEM_MODULES ModuleInformation)
+BOOLEAN ValidateDriverObjectHasBackingModule(
+	_In_ PSYSTEM_MODULES ModuleInformation, 
+	_In_ PDRIVER_OBJECT DriverObject
+)
 {
 	for (int i = 0; i < ModuleInformation->module_count; i++)
 	{
-		RTL_MODULE_EXTENDED_INFO module = *(RTL_MODULE_EXTENDED_INFO*)(
+		RTL_MODULE_EXTENDED_INFO system_module = *(RTL_MODULE_EXTENDED_INFO*)(
 			(uintptr_t)ModuleInformation->address + i * sizeof(RTL_MODULE_EXTENDED_INFO));
 
-		DbgPrint("Module name: %s\n", module.FullPathName);
-		DbgPrint("Module base address: %llx\n", (UINT64)module.ImageBase);
-		DbgPrint("Module size: %lu\n", module.ImageSize);
+		if (system_module.ImageBase == DriverObject->DriverStart)
+		{
+			return TRUE;
+		}
 	}
 
-	return TRUE;
+	DbgPrint("invalid driver found");
+	return FALSE;
 }
 
 //https://imphash.medium.com/windows-process-internals-a-few-concepts-to-know-before-jumping-on-memory-forensics-part-3-4a0e195d947b
@@ -63,7 +68,11 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 	return STATUS_SUCCESS;
 }
 
-NTSTATUS EnumerateDriverObjects(_Out_ PDRIVER_OBJECTS DriverObjects)
+NTSTATUS ValidateDriverObjects(
+	_In_ PSYSTEM_MODULES SystemModules, 
+	_Out_ PDRIVER_OBJECT InvalidDriver,
+	_Out_ int* InvalidDriverCount
+)
 {
 	HANDLE handle;
 
@@ -138,7 +147,16 @@ NTSTATUS EnumerateDriverObjects(_Out_ PDRIVER_OBJECTS DriverObjects)
 		while (sub_entry)
 		{
 			PDRIVER_OBJECT current_driver = sub_entry->Object;
-			DbgPrint("Driver name: %wZ\n", current_driver->DriverName);
+
+			if (!ValidateDriverObjectHasBackingModule(
+				SystemModules,
+				current_driver
+			))
+			{
+				InvalidDriver->DriverName = current_driver->DriverName;
+				*InvalidDriverCount += 1;
+			}
+
 			sub_entry = sub_entry->ChainLink;
 		}
 	}
@@ -294,9 +312,23 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	DbgPrint("Modules addr: %p, num modules: %i\n", modules.address, modules.module_count);
+	DRIVER_OBJECT driver;
+	int count;
+	if (!NT_SUCCESS(ValidateDriverObjects(&modules, &driver, &count)))
+	{
+		DbgPrint("Failed to validate driver objects");
+		return STATUS_FAILED_DRIVER_ENTRY;
+	}
 
-	ValidateDriverObjectsHaveBackingModule(&modules);
+	DbgPrint("COunt: %i\n", count);
+
+	if (count > 0)
+	{
+		DbgPrint("found INVALID driver: %wZ\n", driver.DriverName);
+	}
+	else {
+		DbgPrint("No INVALID drivers found\n");
+	}
 
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
