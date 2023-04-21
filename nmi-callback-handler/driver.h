@@ -7,6 +7,25 @@
 #define NMI_CB_POOL_TAG 'BCmN'
 #define NUMBER_HASH_BUCKETS 37
 
+PVOID thread_data_pool;
+
+/* undocumented functions */
+
+EXTERN_C VOID KeInitializeAffinityEx(
+	PKAFFINITY_EX affinity
+);
+
+EXTERN_C VOID KeAddProcessorAffinityEx(
+	PKAFFINITY_EX affinity, 
+	INT num
+);
+
+EXTERN_C VOID HalSendNMI(
+	PKAFFINITY_EX affinity
+);
+
+/* windows types */
+
 typedef struct _KAFFINITY_EX
 {
 	USHORT Count;
@@ -15,10 +34,6 @@ typedef struct _KAFFINITY_EX
 	ULONGLONG Bitmap[20];
 
 } KAFFINITY_EX, * PKAFFINITY_EX;
-
-EXTERN_C VOID KeInitializeAffinityEx(PKAFFINITY_EX affinity);
-EXTERN_C VOID KeAddProcessorAffinityEx(PKAFFINITY_EX affinity, INT num);
-EXTERN_C VOID HalSendNMI(PKAFFINITY_EX affinity);
 
 typedef struct _NMI_CALLBACK_DATA
 {
@@ -43,7 +58,7 @@ typedef struct _OBJECT_DIRECTORY_ENTRY
 
 typedef struct _OBJECT_DIRECTORY
 {
-	POBJECT_DIRECTORY_ENTRY HashBuckets[37];
+	POBJECT_DIRECTORY_ENTRY HashBuckets[NUMBER_HASH_BUCKETS];
 	EX_PUSH_LOCK Lock;
 	struct _DEVICE_MAP* DeviceMap;
 	ULONG SessionId;
@@ -61,8 +76,6 @@ typedef struct _DEVICE_MAP
 	UCHAR DriveType[32];
 
 } DEVICE_MAP, * PDEVICE_MAP;
-
-PVOID thread_data_pool;
 
 /*
 Thread Information Block: (GS register)

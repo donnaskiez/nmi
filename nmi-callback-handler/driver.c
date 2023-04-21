@@ -1,10 +1,11 @@
 #include "driver.h"
 
-NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
+NTSTATUS EnumerateDriverObjects()
 {
 	HANDLE handle;
+
 	OBJECT_ATTRIBUTES attributes = { 0 };
-	PVOID directory = { 0 };
+	PVOID directory	= { 0 };
 
 	UNICODE_STRING directory_name;
 	RtlInitUnicodeString(&directory_name, L"\\Driver");
@@ -47,7 +48,10 @@ NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
 	* index, it is inserted into same index in a linked list using the 
 	* _OBJECT_DIRECTORY_ENTRY struct. So to enumerate all drivers we visit
 	* each entry in the hashmap, enumerate all objects in the linked list 
-	* then once weve visited every entry at index i we increment.
+	* at entry j then we increment the hashmap index i. The motivation behind
+	* this that when a driver is accessed, it is brought to the first index 
+	* in the linked list, so drivers that are accessed the most can be 
+	* accessed the quickest.
 	*/
 
 	POBJECT_DIRECTORY directory_object = (POBJECT_DIRECTORY)directory;
@@ -55,9 +59,10 @@ NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
 	if (!directory_object)
 		return STATUS_ABANDONED;
 
+	//Lock directory while we are reading it
 	ExAcquirePushLockExclusiveEx(&directory_object->Lock, NULL);
 
-	for (int i = 0; i < 37; i++)
+	for (int i = 0; i < NUMBER_HASH_BUCKETS; i++)
 	{
 		POBJECT_DIRECTORY_ENTRY entry = directory_object->HashBuckets[i];
 
@@ -66,6 +71,7 @@ NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
 
 		POBJECT_DIRECTORY_ENTRY sub_entry = entry;
 
+		//walk the entries linked list until entry is null
 		while (sub_entry)
 		{
 			PDRIVER_OBJECT current_driver = sub_entry->Object;
@@ -74,10 +80,12 @@ NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
 		}
 	}
 
+	//Unlock directory + reduce reference counts to object + close handle
 	ExReleasePushLockExclusiveEx(&directory_object->Lock, 0);
 	ObDereferenceObject(directory);
 	ZwClose(handle);
 
+	return STATUS_SUCCESS;
 }
 
 NTSTATUS AnalyseNmiData(_In_ int numCores)
@@ -216,7 +224,11 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	IsAddressInInvalidRegion(0);
+	if (!NT_SUCCESS(EnumerateDriverObjects()))
+	{
+		DbgPrint("Failed to enumerate driver objects");
+		return STATUS_FAILED_DRIVER_ENTRY;
+	}
 
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
