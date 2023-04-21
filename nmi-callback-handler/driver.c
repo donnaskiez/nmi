@@ -5,6 +5,9 @@ BOOLEAN ValidateDriverObjectHasBackingModule(
 	_In_ PDRIVER_OBJECT DriverObject
 )
 {
+	if (!ModuleInformation || !DriverObject)
+		return FALSE;
+
 	for (int i = 0; i < ModuleInformation->module_count; i++)
 	{
 		RTL_MODULE_EXTENDED_INFO system_module = *(RTL_MODULE_EXTENDED_INFO*)(
@@ -16,13 +19,16 @@ BOOLEAN ValidateDriverObjectHasBackingModule(
 		}
 	}
 
-	DbgPrint("invalid driver found");
+	DbgPrint("invalid driver found\n");
 	return FALSE;
 }
 
 //https://imphash.medium.com/windows-process-internals-a-few-concepts-to-know-before-jumping-on-memory-forensics-part-3-4a0e195d947b
 NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 {
+	if (!ModuleInformation)
+		return STATUS_ABANDONED;
+
 	ULONG size = 0;
 
 	//query system module information without an output buffer to get 
@@ -70,7 +76,7 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 
 NTSTATUS ValidateDriverObjects(
 	_In_ PSYSTEM_MODULES SystemModules, 
-	_Out_ PDRIVER_OBJECT InvalidDriver,
+	_Out_ PVOID InvalidDriverPool,
 	_Out_ int* InvalidDriverCount
 )
 {
@@ -153,7 +159,6 @@ NTSTATUS ValidateDriverObjects(
 				current_driver
 			))
 			{
-				InvalidDriver->DriverName = current_driver->DriverName;
 				*InvalidDriverCount += 1;
 			}
 
@@ -196,24 +201,18 @@ BOOLEAN IsInstructionPointerInInvalidRegion(
 	return FALSE;
 }
 
-NTSTATUS AnalyseNmiData(_In_ int numCores, _In_ PSYSTEM_MODULES SystemModules)
+NTSTATUS AnalyseNmiData(
+	_In_ int numCores, 
+	_In_ PSYSTEM_MODULES SystemModules
+)
 {	
+	if (!numCores || !SystemModules)
+		return STATUS_ABANDONED;
+
 	for (int i = 0; i < numCores; i++)
 	{
-		NMI_CALLBACK_DATA thread_data;
-
-		RtlCopyMemory(
-			&thread_data,
-			(uintptr_t)thread_data_pool + i * sizeof(NMI_CALLBACK_DATA),
-			sizeof(NMI_CALLBACK_DATA)
-		);
-
-		//do stuff
-		//TO DO:
-		//check start address
-		//check if any of the RIPs from the stackwalk lie in unsigned regions
-		//see if anything funky is happening with the threads cr3
-		//??
+		NMI_CALLBACK_DATA thread_data = *(NMI_CALLBACK_DATA*)(
+			(uintptr_t)thread_data_pool + i * sizeof(NMI_CALLBACK_DATA));
 
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
 		{
@@ -223,12 +222,10 @@ NTSTATUS AnalyseNmiData(_In_ int numCores, _In_ PSYSTEM_MODULES SystemModules)
 			if (!flag)
 			{
 				DbgPrint("RIP was executing in invalid region: %llx\n", stack_frame);
-				//do stuff
 			}
 
 		}
 
-		//free frame pool
 		ExFreePoolWithTag(thread_data.stack_unwind_pool, NMI_CB_POOL_TAG);
 	}
 }
@@ -323,6 +320,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}
 
 	SYSTEM_MODULES modules;
+
 	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
 		DbgPrint("Failed to enumerate driver objects");
@@ -335,18 +333,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	DRIVER_OBJECT driver;
+	PVOID drivers = NULL;
 	int count = 0;
-	if (!NT_SUCCESS(ValidateDriverObjects(&modules, &driver, &count)))
+
+	if (!NT_SUCCESS(ValidateDriverObjects(&modules, &drivers, &count)))
 	{
 		DbgPrint("Failed to validate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	DbgPrint("count: %i\n", count);
-
-	(count > 0)
-		? DbgPrint("found INVALID driver: %wZ\n", driver.DriverName) 
+	count > 0
+		? DbgPrint("found INVALID drivers with count: %i\n", count)
 		: DbgPrint("No INVALID drivers found\n");
 
 	UINT64 test_addr = 18446628139270488814;

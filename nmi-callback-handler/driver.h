@@ -9,12 +9,26 @@
 
 PVOID thread_data_pool;
 
+typedef struct _INVALID_DRIVERS
+{
+	LIST_ENTRY list_entry;
+	PDRIVER_OBJECT driver;
+
+}INVALID_DRIVERS, * PINVALID_DRIVERS;
+
 typedef struct _SYSTEM_MODULES
 {
 	PVOID address;
 	int module_count;
 
-}SYSTEM_MODULES, *PSYSTEM_MODULES;
+}SYSTEM_MODULES, * PSYSTEM_MODULES;
+
+typedef struct _INVALID_DRIVERS_HEAD
+{
+	PINVALID_DRIVERS first_entry;
+	int count;
+
+}INVALID_DRIVERS_HEAD, *PINVALID_DRIVERS_HEAD;
 
 typedef struct _DRIVER_OBJECTS
 {
