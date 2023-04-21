@@ -2,8 +2,82 @@
 
 NTSTATUS IsAddressInInvalidRegion(_In_ UINT64 Address)
 {
-	//Here we can use ZwQuerySystemInformation with SystemModuleInformation to 
-	//numerate loaded drivers
+	HANDLE handle;
+	OBJECT_ATTRIBUTES attributes = { 0 };
+	PVOID directory = { 0 };
+
+	UNICODE_STRING directory_name;
+	RtlInitUnicodeString(&directory_name, L"\\Driver");
+
+	InitializeObjectAttributes(
+		&attributes,
+		&directory_name,
+		OBJ_CASE_INSENSITIVE,
+		NULL,
+		NULL
+	);
+
+	if (!NT_SUCCESS(ZwOpenDirectoryObject(
+		&handle,
+		DIRECTORY_ALL_ACCESS,
+		&attributes
+	)))
+	{
+		DbgPrint("Failed to query directory object");
+		return STATUS_ABANDONED;
+	}
+
+	if (!NT_SUCCESS(ObReferenceObjectByHandle(
+		handle,
+		DIRECTORY_ALL_ACCESS,
+		NULL,
+		KernelMode,
+		&directory,
+		NULL
+	)))
+	{
+		DbgPrint("Failed to reference directory by handle");
+		return STATUS_ABANDONED;
+	}
+
+	/*
+	* Windows organises its drivers in object directories (not the same as 
+	* files directories). For the driver directory, there are 37 entries, 
+	* each driver is hashed and indexed. If there is a driver with a duplicate
+	* index, it is inserted into same index in a linked list using the 
+	* _OBJECT_DIRECTORY_ENTRY struct. So to enumerate all drivers we visit
+	* each entry in the hashmap, enumerate all objects in the linked list 
+	* then once weve visited every entry at index i we increment.
+	*/
+
+	POBJECT_DIRECTORY directory_object = (POBJECT_DIRECTORY)directory;
+
+	if (!directory_object)
+		return STATUS_ABANDONED;
+
+	ExAcquirePushLockExclusiveEx(&directory_object->Lock, NULL);
+
+	for (int i = 0; i < 37; i++)
+	{
+		POBJECT_DIRECTORY_ENTRY entry = directory_object->HashBuckets[i];
+
+		if (!entry)
+			continue;
+
+		POBJECT_DIRECTORY_ENTRY sub_entry = entry;
+
+		while (sub_entry)
+		{
+			PDRIVER_OBJECT current_driver = sub_entry->Object;
+			DbgPrint("Driver name: %wZ\n", current_driver->DriverName);
+			sub_entry = sub_entry->ChainLink;
+		}
+	}
+
+	ExReleasePushLockExclusiveEx(&directory_object->Lock, 0);
+	ObDereferenceObject(directory);
+	ZwClose(handle);
+
 }
 
 NTSTATUS AnalyseNmiData(_In_ int numCores)
@@ -141,6 +215,8 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		DbgPrint("Failed to analyse the stack walk");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
+
+	IsAddressInInvalidRegion(0);
 
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);

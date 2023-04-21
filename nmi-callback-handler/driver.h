@@ -5,6 +5,7 @@
 #include <intrin.h>
 
 #define NMI_CB_POOL_TAG 'BCmN'
+#define NUMBER_HASH_BUCKETS 37
 
 typedef struct _KAFFINITY_EX
 {
@@ -31,6 +32,35 @@ typedef struct _NMI_CALLBACK_DATA
 	UINT64	cr3;
 
 }NMI_CALLBACK_DATA, * PNMI_CALLBACK_DATA;
+
+typedef struct _OBJECT_DIRECTORY_ENTRY
+{
+	struct _OBJECT_DIRECTORY_ENTRY* ChainLink;
+	PVOID Object;
+	ULONG HashValue;
+
+} OBJECT_DIRECTORY_ENTRY, * POBJECT_DIRECTORY_ENTRY;
+
+typedef struct _OBJECT_DIRECTORY
+{
+	POBJECT_DIRECTORY_ENTRY HashBuckets[37];
+	EX_PUSH_LOCK Lock;
+	struct _DEVICE_MAP* DeviceMap;
+	ULONG SessionId;
+	PVOID NamespaceEntry;
+	ULONG Flags;
+
+} OBJECT_DIRECTORY, * POBJECT_DIRECTORY;
+
+typedef struct _DEVICE_MAP
+{
+	struct _OBJECT_DIRECTORY* DosDevicesDirectory;
+	struct _OBJECT_DIRECTORY* GlobalDosDevicesDirectory;
+	ULONG ReferenceCount;
+	ULONG DriveMap;
+	UCHAR DriveType[32];
+
+} DEVICE_MAP, * PDEVICE_MAP;
 
 PVOID thread_data_pool;
 
