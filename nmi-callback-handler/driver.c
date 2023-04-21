@@ -169,7 +169,34 @@ NTSTATUS ValidateDriverObjects(
 	return STATUS_SUCCESS;
 }
 
-NTSTATUS AnalyseNmiData(_In_ int numCores)
+BOOLEAN IsInstructionPointerInInvalidRegion(
+	_In_ UINT64 RIP, 
+	_In_ PSYSTEM_MODULES SystemModules
+)
+{
+	if (!RIP || !SystemModules)
+		return FALSE;
+
+	for (int i = 0; i < SystemModules->module_count; i++)
+	{
+		RTL_MODULE_EXTENDED_INFO system_module = *(RTL_MODULE_EXTENDED_INFO*)(
+			(uintptr_t)SystemModules->address + i * sizeof(RTL_MODULE_EXTENDED_INFO));
+
+		UINT64 base = system_module.ImageBase;
+		UINT64 end = base + system_module.ImageSize;
+
+		if (RIP >= base && RIP <= end)
+		{
+			DbgPrint("RIP executing within module: %s\n", system_module.FullPathName);
+			return TRUE;
+		}
+	}
+
+	DbgPrint("RIP seems to be executing from within invalid memory\n");
+	return FALSE;
+}
+
+NTSTATUS AnalyseNmiData(_In_ int numCores, _In_ PSYSTEM_MODULES SystemModules)
 {	
 	for (int i = 0; i < numCores; i++)
 	{
@@ -181,16 +208,6 @@ NTSTATUS AnalyseNmiData(_In_ int numCores)
 			sizeof(NMI_CALLBACK_DATA)
 		);
 
-		DbgPrint("------------------------\n");
-		DbgPrint("kthread address: %llx\n", thread_data.kthread_address);
-		DbgPrint("kprocess address: %llx\n", thread_data.kprocess_address);
-		DbgPrint("Stack base: %llx\n", thread_data.stack_base);
-		DbgPrint("Stack limit: %llx\n", thread_data.stack_limit);
-		DbgPrint("start address: %llx\n", thread_data.start_address);
-		DbgPrint("cr3: %llx\n", thread_data.cr3);
-		DbgPrint("stack frame pointer: %p\n", thread_data.stack_unwind_pool);
-		DbgPrint("num frames captured: %i\n", thread_data.num_frames_captured);
-
 		//do stuff
 		//TO DO:
 		//check start address
@@ -198,11 +215,17 @@ NTSTATUS AnalyseNmiData(_In_ int numCores)
 		//see if anything funky is happening with the threads cr3
 		//??
 
-		DbgPrint("--STACK WALK--\n");
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
 		{
 			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)thread_data.stack_unwind_pool + i * sizeof(PVOID)));
-			DbgPrint("frame: %llx\n", stack_frame);
+			BOOLEAN flag = IsInstructionPointerInInvalidRegion(stack_frame, SystemModules);
+
+			if (!flag)
+			{
+				DbgPrint("RIP was executing in invalid region: %llx\n", stack_frame);
+				//do stuff
+			}
+
 		}
 
 		//free frame pool
@@ -299,12 +322,6 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		KeDelayExecutionThread(KernelMode, FALSE, &delay);
 	}
 
-	if (!NT_SUCCESS(AnalyseNmiData(num_cores)))
-	{
-		DbgPrint("Failed to analyse the stack walk");
-		return STATUS_FAILED_DRIVER_ENTRY;
-	}
-
 	SYSTEM_MODULES modules;
 	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
@@ -312,27 +329,33 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
+	if (!NT_SUCCESS(AnalyseNmiData(num_cores, &modules)))
+	{
+		DbgPrint("Failed to analyse the stack walk");
+		return STATUS_FAILED_DRIVER_ENTRY;
+	}
+
 	DRIVER_OBJECT driver;
-	int count;
+	int count = 0;
 	if (!NT_SUCCESS(ValidateDriverObjects(&modules, &driver, &count)))
 	{
 		DbgPrint("Failed to validate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	DbgPrint("COunt: %i\n", count);
+	DbgPrint("count: %i\n", count);
 
-	if (count > 0)
-	{
-		DbgPrint("found INVALID driver: %wZ\n", driver.DriverName);
-	}
-	else {
-		DbgPrint("No INVALID drivers found\n");
-	}
+	(count > 0)
+		? DbgPrint("found INVALID driver: %wZ\n", driver.DriverName) 
+		: DbgPrint("No INVALID drivers found\n");
+
+	UINT64 test_addr = 18446628139270488814;
+	IsInstructionPointerInInvalidRegion(test_addr, &modules);
 
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
 
+	ExFreePoolWithTag(modules.address, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(thread_data_pool, NMI_CB_POOL_TAG);
 
