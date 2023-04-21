@@ -9,20 +9,19 @@
 
 PVOID thread_data_pool;
 
-/* undocumented functions */
+typedef struct _SYSTEM_MODULES
+{
+	PVOID address;
+	int module_count;
 
-EXTERN_C VOID KeInitializeAffinityEx(
-	PKAFFINITY_EX affinity
-);
+}SYSTEM_MODULES, *PSYSTEM_MODULES;
 
-EXTERN_C VOID KeAddProcessorAffinityEx(
-	PKAFFINITY_EX affinity, 
-	INT num
-);
+typedef struct _DRIVER_OBJECTS
+{
+	PVOID address;
+	int module_count;
 
-EXTERN_C VOID HalSendNMI(
-	PKAFFINITY_EX affinity
-);
+}DRIVER_OBJECTS, *PDRIVER_OBJECTS;
 
 /* windows types */
 
@@ -76,6 +75,36 @@ typedef struct _DEVICE_MAP
 	UCHAR DriveType[32];
 
 } DEVICE_MAP, * PDEVICE_MAP;
+
+typedef struct _RTL_MODULE_EXTENDED_INFO
+{
+	PVOID ImageBase;
+	ULONG ImageSize;
+	USHORT FileNameOffset;
+	CHAR FullPathName[0x100];
+
+} RTL_MODULE_EXTENDED_INFO, * PRTL_MODULE_EXTENDED_INFO;
+
+/* undocumented functions */
+
+EXTERN_C VOID KeInitializeAffinityEx(
+	PKAFFINITY_EX affinity
+);
+
+EXTERN_C VOID KeAddProcessorAffinityEx(
+	PKAFFINITY_EX affinity,
+	INT num
+);
+
+EXTERN_C VOID HalSendNMI(
+	PKAFFINITY_EX affinity
+);
+
+NTSTATUS
+RtlQueryModuleInformation(
+	ULONG* InformationLength,
+	ULONG SizePerModule,
+	PVOID InformationBuffer);
 
 /*
 Thread Information Block: (GS register)

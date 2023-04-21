@@ -1,6 +1,69 @@
 #include "driver.h"
 
-NTSTATUS EnumerateDriverObjects()
+BOOLEAN ValidateDriverObjectsHaveBackingModule(_In_ PSYSTEM_MODULES ModuleInformation)
+{
+	for (int i = 0; i < ModuleInformation->module_count; i++)
+	{
+		RTL_MODULE_EXTENDED_INFO module = *(RTL_MODULE_EXTENDED_INFO*)(
+			(uintptr_t)ModuleInformation->address + i * sizeof(RTL_MODULE_EXTENDED_INFO));
+
+		DbgPrint("Module name: %s\n", module.FullPathName);
+		DbgPrint("Module base address: %llx\n", (UINT64)module.ImageBase);
+		DbgPrint("Module size: %lu\n", module.ImageSize);
+	}
+
+	return TRUE;
+}
+
+//https://imphash.medium.com/windows-process-internals-a-few-concepts-to-know-before-jumping-on-memory-forensics-part-3-4a0e195d947b
+NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
+{
+	ULONG size = 0;
+
+	//query system module information without an output buffer to get 
+	//number of bytes required to store all module info structures
+	if (!NT_SUCCESS(RtlQueryModuleInformation(
+		&size,
+		sizeof(RTL_MODULE_EXTENDED_INFO),
+		NULL
+	)))
+	{
+		DbgPrint("Failed to query module information");
+		return STATUS_ABANDONED;
+	}
+
+	//allocate pool big enough to store those structures
+	PRTL_MODULE_EXTENDED_INFO driver_information = ExAllocatePool2(
+		POOL_FLAG_NON_PAGED,
+		size,
+		NMI_CB_POOL_TAG
+	);
+
+	if (!driver_information)
+	{
+		DbgPrint("Failed to allocate pool LOL");
+		return STATUS_ABANDONED;
+	}
+
+	//query the module information again this time passing the output buffer
+	//to store module information blocks
+	if (!NT_SUCCESS(RtlQueryModuleInformation(
+		&size,
+		sizeof(RTL_MODULE_EXTENDED_INFO),
+		driver_information
+	)))
+	{
+		DbgPrint("Failed lolz");
+		return STATUS_ABANDONED;
+	}
+	
+	ModuleInformation->address = driver_information;
+	ModuleInformation->module_count = size / sizeof(RTL_MODULE_EXTENDED_INFO);
+
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS EnumerateDriverObjects(_Out_ PDRIVER_OBJECTS DriverObjects)
 {
 	HANDLE handle;
 
@@ -49,9 +112,9 @@ NTSTATUS EnumerateDriverObjects()
 	* _OBJECT_DIRECTORY_ENTRY struct. So to enumerate all drivers we visit
 	* each entry in the hashmap, enumerate all objects in the linked list 
 	* at entry j then we increment the hashmap index i. The motivation behind
-	* this that when a driver is accessed, it is brought to the first index 
+	* this is that when a driver is accessed, it is brought to the first index 
 	* in the linked list, so drivers that are accessed the most can be 
-	* accessed the quickest.
+	* accessed quickly
 	*/
 
 	POBJECT_DIRECTORY directory_object = (POBJECT_DIRECTORY)directory;
@@ -224,11 +287,16 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	if (!NT_SUCCESS(EnumerateDriverObjects()))
+	SYSTEM_MODULES modules;
+	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
 		DbgPrint("Failed to enumerate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
+
+	DbgPrint("Modules addr: %p, num modules: %i\n", modules.address, modules.module_count);
+
+	ValidateDriverObjectsHaveBackingModule(&modules);
 
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
