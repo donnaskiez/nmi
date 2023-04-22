@@ -11,12 +11,23 @@
 PVOID thread_data_pool;
 PVOID stack_frames;
 
+/* invalid drivers linked list items */
+
 typedef struct _INVALID_DRIVER
 {
 	struct _INVALID_DRIVER* next;
 	PDRIVER_OBJECT driver;
 
 }INVALID_DRIVER, * PINVALID_DRIVER;
+
+typedef struct _INVALID_DRIVERS_HEAD
+{
+	PINVALID_DRIVER first_entry;
+	int count;
+
+}INVALID_DRIVERS_HEAD, * PINVALID_DRIVERS_HEAD;
+
+/* system modules information */
 
 typedef struct _SYSTEM_MODULES
 {
@@ -25,12 +36,17 @@ typedef struct _SYSTEM_MODULES
 
 }SYSTEM_MODULES, * PSYSTEM_MODULES;
 
-typedef struct _INVALID_DRIVERS_HEAD
-{
-	PINVALID_DRIVER first_entry;
-	int count;
+/* driver objects information */
 
-}INVALID_DRIVERS_HEAD, *PINVALID_DRIVERS_HEAD;
+/*
+*  Driver objects are different from system modules.
+*  A manually mapped driver will call IoCreateDevice, 
+*  passing in a PDEVICE_OBJECT allocated on the stack
+*  and thus will appear in the device objects directory
+*  however these objects will not be in the
+*  PsLoadedModuleList as they are invalid drivers
+*/
+
 
 typedef struct _DRIVER_OBJECTS
 {
@@ -39,16 +55,7 @@ typedef struct _DRIVER_OBJECTS
 
 }DRIVER_OBJECTS, *PDRIVER_OBJECTS;
 
-/* windows types */
-
-typedef struct _KAFFINITY_EX
-{
-	USHORT Count;
-	USHORT Size;
-	ULONG Reserved;
-	ULONGLONG Bitmap[20];
-
-} KAFFINITY_EX, * PKAFFINITY_EX;
+/* data gathered during nmi callback */
 
 typedef struct _NMI_CALLBACK_DATA
 {
@@ -62,6 +69,17 @@ typedef struct _NMI_CALLBACK_DATA
 	UINT64	cr3;
 
 }NMI_CALLBACK_DATA, * PNMI_CALLBACK_DATA;
+
+/* windows types */
+
+typedef struct _KAFFINITY_EX
+{
+	USHORT Count;
+	USHORT Size;
+	ULONG Reserved;
+	ULONGLONG Bitmap[20];
+
+} KAFFINITY_EX, * PKAFFINITY_EX;
 
 typedef struct _OBJECT_DIRECTORY_ENTRY
 {
