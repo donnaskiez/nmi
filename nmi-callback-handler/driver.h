@@ -23,7 +23,7 @@ typedef struct _INVALID_DRIVER
 typedef struct _INVALID_DRIVERS_HEAD
 {
 	PINVALID_DRIVER first_entry;
-	int count;
+	int count;		//keeps track of the number of drivers in the list
 
 }INVALID_DRIVERS_HEAD, * PINVALID_DRIVERS_HEAD;
 
@@ -59,14 +59,14 @@ typedef struct _DRIVER_OBJECTS
 
 typedef struct _NMI_CALLBACK_DATA
 {
-	UINT64	kthread_address;
-	UINT64	kprocess_address;
-	UINT64	start_address;
-	UINT64	stack_limit;
-	UINT64	stack_base;
+	UINT64		kthread_address;
+	UINT64		kprocess_address;
+	UINT64		start_address;
+	UINT64		stack_limit;
+	UINT64		stack_base;
 	uintptr_t	stack_frames_offset;
-	int		num_frames_captured;
-	UINT64	cr3;
+	int			num_frames_captured;
+	UINT64		cr3;
 
 }NMI_CALLBACK_DATA, * PNMI_CALLBACK_DATA;
 

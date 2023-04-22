@@ -80,12 +80,15 @@ VOID InitDriverList(_In_ PINVALID_DRIVERS_HEAD ListHead)
 	ListHead->first_entry = NULL;
 }
 
-VOID AddDriverToList(_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead, _In_ PDRIVER_OBJECT Driver)
+VOID AddDriverToList(
+	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead, 
+	_In_ PDRIVER_OBJECT Driver
+)
 {
 	PINVALID_DRIVER new_entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVER), NMI_CB_POOL_TAG);
 
 	if (!new_entry)
-		return STATUS_ABANDONED;
+		return;
 
 	new_entry->driver = Driver;
 	new_entry->next = InvalidDriversHead->first_entry;
@@ -280,7 +283,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	ULONG proc_num = KeGetCurrentProcessorNumber();
 
 	//Cannot allocate pool in this function as it runs at IRQL >= dispatch level
-	//so ive just allocated a global pool equal to 0x200 * num_procs
+	//so ive just allocated a global pool with size equal to 0x200 * num_procs
 
 	int num_frames_captured = RtlCaptureStackBackTrace(
 		0,
@@ -288,9 +291,6 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 		(uintptr_t)stack_frames + proc_num * 0x200,
 		NULL
 	);
-
-	//TODO: need to use the context to increment the callback counter to check if nmis
-	//have been disabled
 
 	PVOID current_thread = KeGetCurrentThread();
 
@@ -313,51 +313,30 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	return TRUE;
 }
 
-NTSTATUS DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
+NTSTATUS LaunchNonMaskableInterrupt(_In_ ULONG NumCores)
 {
-	UNREFERENCED_PARAMETER(DriverObject);
-
-	DbgPrint("unloading driver");
-}
-
-NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
-{
-	UNREFERENCED_PARAMETER(RegistryPath);
-	UNREFERENCED_PARAMETER(DriverObject);
-
-	DriverObject->DriverUnload = DriverUnload;
-
 	//Allocate a pool for our Processor affinity structures
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
 
 	if (!ProcAffinityPool)
-		return STATUS_FAILED_DRIVER_ENTRY;
+		return STATUS_ABANDONED;
 
-	//Register our callback
-	PVOID NMICallbackHandle = KeRegisterNmiCallback(NmiCallback, 0);
-
-	if (!NMICallbackHandle)
-		return STATUS_FAILED_DRIVER_ENTRY;
-
-	//Count cores (NMI's are sent per core)
-	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
-
-	stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * 0x200, NMI_CB_POOL_TAG);
+	stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * 0x200, NMI_CB_POOL_TAG);
 
 	if (!stack_frames)
-		return STATUS_FAILED_DRIVER_ENTRY;
+		return STATUS_ABANDONED;
 
-	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
+	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
 
 	if (!thread_data_pool)
-		return STATUS_FAILED_DRIVER_ENTRY;
+		return STATUS_ABANDONED;
 
 	//Calculate our delay (200ms currently)
 	LARGE_INTEGER delay = { 0 };
 	delay.QuadPart -= 200 * 10000;
 
 	//Iterate over each logical processor to fire NMI
-	for (ULONG core = 0; core < num_cores; core++)
+	for (ULONG core = 0; core < NumCores; core++)
 	{
 		//Bind the interrupted thread to the logical processor its running on
 		KeInitializeAffinityEx(ProcAffinityPool);
@@ -373,8 +352,41 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		KeDelayExecutionThread(KernelMode, FALSE, &delay);
 	}
 
-	SYSTEM_MODULES modules;
+	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
+{
+	UNREFERENCED_PARAMETER(DriverObject);
+
+	DbgPrint("unloading driver");
+}
+
+NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
+{
+	UNREFERENCED_PARAMETER(RegistryPath);
+	UNREFERENCED_PARAMETER(DriverObject);
+
+	DriverObject->DriverUnload = DriverUnload;
+
+	//Register our callback
+	PVOID NMICallbackHandle = KeRegisterNmiCallback(NmiCallback, 0);
+
+	if (!NMICallbackHandle)
+		return STATUS_ABANDONED;
+
+	//Count cores (NMI's are sent per core)
+	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
+
+	if (!NT_SUCCESS(LaunchNonMaskableInterrupt(num_cores)))
+	{
+		DbgPrint("Failed to launch NMI");
+		return STATUS_FAILED_DRIVER_ENTRY;
+	}
+
+	SYSTEM_MODULES modules;
 	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
 		DbgPrint("Failed to enumerate driver objects");
@@ -386,8 +398,6 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		DbgPrint("Failed to analyse the stack walk");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
-
-	PVOID drivers = NULL;
 
 	PINVALID_DRIVERS_HEAD head =
 		ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVERS_HEAD), NMI_CB_POOL_TAG);
@@ -403,18 +413,12 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	head->count > 0
-		? DbgPrint("found INVALID drivers with count: %i\n", head->count)
-		: DbgPrint("No INVALID drivers found\n");
-
-	UINT64 test_addr = 18446628139270488814;
-	IsInstructionPointerInInvalidRegion(test_addr, &modules);
-
-	//Unregister our callback + free allocated pool
-	KeDeregisterNmiCallback(NMICallbackHandle);
+	//UINT64 test_addr = 18446628139270488814;
+	//IsInstructionPointerInInvalidRegion(test_addr, &modules);
 
 	if (head->count > 0)
 	{
+		DbgPrint("found INVALID drivers with count: %i\n", head->count);
 		EnumerateInvalidDrivers(head);
 
 		for (int i = 0; i < head->count; i++)
@@ -422,11 +426,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 			RemoveInvalidDriverFromList(head);
 		}
 	}
+	else
+	{
+		DbgPrint("No INVALID drivers found\n");
+	}
+
+	//Unregister our callback + free pools
+	KeDeregisterNmiCallback(NMICallbackHandle);
 
 	ExFreePoolWithTag(stack_frames, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(head, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(modules.address, NMI_CB_POOL_TAG);
-	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(thread_data_pool, NMI_CB_POOL_TAG);
 
 	return STATUS_SUCCESS;
