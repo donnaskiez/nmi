@@ -74,10 +74,48 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 	return STATUS_SUCCESS;
 }
 
+VOID InitDriverList(_In_ PINVALID_DRIVERS_HEAD ListHead)
+{
+	ListHead->count = 0;
+	ListHead->first_entry = NULL;
+}
+
+VOID AddDriverToList(_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead, _In_ PDRIVER_OBJECT Driver)
+{
+	PINVALID_DRIVER new_entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVER), NMI_CB_POOL_TAG);
+
+	if (!new_entry)
+		return STATUS_ABANDONED;
+
+	new_entry->driver = Driver;
+	new_entry->next = InvalidDriversHead->first_entry;
+	InvalidDriversHead->first_entry = new_entry;
+}
+
+VOID RemoveInvalidDriverFromList(_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead)
+{
+	if (InvalidDriversHead->first_entry)
+	{
+		PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
+		InvalidDriversHead->first_entry = InvalidDriversHead->first_entry->next;
+		ExFreePoolWithTag(entry, NMI_CB_POOL_TAG);
+	}
+}
+
+VOID EnumerateInvalidDrivers(_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead)
+{
+	PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
+
+	while (entry != NULL)
+	{
+		DbgPrint("Invalid Driver: %wZ\n", entry->driver->DriverName);
+		entry = entry->next;
+	}
+}
+
 NTSTATUS ValidateDriverObjects(
 	_In_ PSYSTEM_MODULES SystemModules, 
-	_Out_ PVOID InvalidDriverPool,
-	_Out_ int* InvalidDriverCount
+	_In_ PINVALID_DRIVERS_HEAD InvalidDriverListHead
 )
 {
 	HANDLE handle;
@@ -159,7 +197,8 @@ NTSTATUS ValidateDriverObjects(
 				current_driver
 			))
 			{
-				*InvalidDriverCount += 1;
+				InvalidDriverListHead->count += 1;
+				AddDriverToList(InvalidDriverListHead, current_driver);
 			}
 
 			sub_entry = sub_entry->ChainLink;
@@ -228,6 +267,8 @@ NTSTATUS AnalyseNmiData(
 
 		ExFreePoolWithTag(thread_data.stack_unwind_pool, NMI_CB_POOL_TAG);
 	}
+
+	return STATUS_SUCCESS;
 }
 
 BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
@@ -238,7 +279,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 
 	DbgPrint("nmi callback called\n");
 
-	//must free each pool after each stack frame has been analysed
+	//this is wrong cant allocate pool at IRQL >= dispatch level
 	PVOID stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, 0x200, NMI_CB_POOL_TAG);
 
 	int num_frames_captured = RtlCaptureStackBackTrace(
@@ -274,10 +315,19 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	return TRUE;
 }
 
+NTSTATUS DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
+{
+	UNREFERENCED_PARAMETER(DriverObject);
+
+	DbgPrint("unloading driver");
+}
+
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 {
 	UNREFERENCED_PARAMETER(RegistryPath);
 	UNREFERENCED_PARAMETER(DriverObject);
+
+	DriverObject->DriverUnload = DriverUnload;
 
 	//Allocate a pool for our Processor affinity structures
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
@@ -335,16 +385,23 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}
 
 	PVOID drivers = NULL;
-	int count = 0;
 
-	if (!NT_SUCCESS(ValidateDriverObjects(&modules, &drivers, &count)))
+	PINVALID_DRIVERS_HEAD head =
+		ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVERS_HEAD), NMI_CB_POOL_TAG);
+
+	if (!head)
+		return STATUS_ABANDONED;
+
+	InitDriverList(head);
+
+	if (!NT_SUCCESS(ValidateDriverObjects(&modules, head)))
 	{
 		DbgPrint("Failed to validate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
-	count > 0
-		? DbgPrint("found INVALID drivers with count: %i\n", count)
+	head->count > 0
+		? DbgPrint("found INVALID drivers with count: %i\n", head->count)
 		: DbgPrint("No INVALID drivers found\n");
 
 	UINT64 test_addr = 18446628139270488814;
@@ -353,6 +410,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	//Unregister our callback + free allocated pool
 	KeDeregisterNmiCallback(NMICallbackHandle);
 
+	if (head->count > 0)
+	{
+		EnumerateInvalidDrivers(head);
+
+		for (int i = 0; i < head->count; i++)
+		{
+			RemoveInvalidDriverFromList(head);
+		}
+	}
+
+	ExFreePoolWithTag(head, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(modules.address, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(thread_data_pool, NMI_CB_POOL_TAG);
