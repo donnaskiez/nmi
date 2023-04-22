@@ -229,7 +229,7 @@ BOOLEAN IsInstructionPointerInInvalidRegion(
 		RTL_MODULE_EXTENDED_INFO system_module = *(RTL_MODULE_EXTENDED_INFO*)(
 			(uintptr_t)SystemModules->address + i * sizeof(RTL_MODULE_EXTENDED_INFO));
 
-		UINT64 base = system_module.ImageBase;
+		UINT64 base = (UINT64)system_module.ImageBase;
 		UINT64 end = base + system_module.ImageSize;
 
 		if (RIP >= base && RIP <= end)
@@ -412,9 +412,6 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		DbgPrint("Failed to validate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
-
-	//UINT64 test_addr = 18446628139270488814;
-	//IsInstructionPointerInInvalidRegion(test_addr, &modules);
 
 	if (head->count > 0)
 	{
