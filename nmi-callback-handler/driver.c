@@ -255,7 +255,7 @@ NTSTATUS AnalyseNmiData(
 
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
 		{
-			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)thread_data.stack_unwind_pool + i * sizeof(PVOID)));
+			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)stack_frames + thread_data.stack_frames_offset + i * sizeof(PVOID)));
 			BOOLEAN flag = IsInstructionPointerInInvalidRegion(stack_frame, SystemModules);
 
 			if (!flag && flag != ERROR)
@@ -264,8 +264,6 @@ NTSTATUS AnalyseNmiData(
 			}
 
 		}
-
-		ExFreePoolWithTag(thread_data.stack_unwind_pool, NMI_CB_POOL_TAG);
 	}
 
 	return STATUS_SUCCESS;
@@ -279,13 +277,15 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 
 	DbgPrint("nmi callback called\n");
 
-	//this is wrong cant allocate pool at IRQL >= dispatch level
-	PVOID stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, 0x200, NMI_CB_POOL_TAG);
+	ULONG proc_num = KeGetCurrentProcessorNumber();
+
+	//Cannot allocate pool in this function as it runs at IRQL >= dispatch level
+	//so ive just allocated a global pool equal to 0x200 * num_procs
 
 	int num_frames_captured = RtlCaptureStackBackTrace(
 		0,
 		0x200,
-		stack_frames,
+		(uintptr_t)stack_frames + proc_num * 0x200,
 		NULL
 	);
 
@@ -301,10 +301,8 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	thread_data.stack_limit = *((UINT64*)((uintptr_t)current_thread + 0x038));
 	thread_data.start_address = *((UINT64*)((uintptr_t)current_thread + 0x450));		//can be spoofed but still a decent detection vector
 	thread_data.cr3 = __readcr3();
-	thread_data.stack_unwind_pool = stack_frames;
+	thread_data.stack_frames_offset = proc_num * 0x200;
 	thread_data.num_frames_captured = num_frames_captured;
-
-	ULONG proc_num = KeGetCurrentProcessorNumber();
 
 	RtlCopyMemory(
 		((uintptr_t)thread_data_pool) + proc_num * sizeof(thread_data),
@@ -343,6 +341,11 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	//Count cores (NMI's are sent per core)
 	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
+
+	stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * 0x200, NMI_CB_POOL_TAG);
+
+	if (!stack_frames)
+		return STATUS_FAILED_DRIVER_ENTRY;
 
 	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
 
@@ -420,6 +423,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		}
 	}
 
+	ExFreePoolWithTag(stack_frames, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(head, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(modules.address, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);

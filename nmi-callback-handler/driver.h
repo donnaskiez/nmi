@@ -9,6 +9,7 @@
 #define ERROR -1
 
 PVOID thread_data_pool;
+PVOID stack_frames;
 
 typedef struct _INVALID_DRIVER
 {
@@ -56,7 +57,7 @@ typedef struct _NMI_CALLBACK_DATA
 	UINT64	start_address;
 	UINT64	stack_limit;
 	UINT64	stack_base;
-	PVOID	stack_unwind_pool;
+	uintptr_t	stack_frames_offset;
 	int		num_frames_captured;
 	UINT64	cr3;
 
