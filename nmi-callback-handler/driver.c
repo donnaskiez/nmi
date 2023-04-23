@@ -269,7 +269,7 @@ NTSTATUS AnalyseNmiData(
 		DEBUG_LOG("cpu number: %i callback count: %i", i, context->nmi_callbacks_run);
 
 		//Check for PsCreateSystemThread
-		//TODO: Need to check thread start address is either within a valid module or matches an ETHREAD start address
+		//TODO: Need to check thread start address is either in valid module or in a user mode proc
 
 		//walk the stack :3
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
