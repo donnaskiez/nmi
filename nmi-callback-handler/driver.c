@@ -19,7 +19,7 @@ BOOLEAN ValidateDriverObjectHasBackingModule(
 		}
 	}
 
-	DbgPrint("invalid driver found\n");
+	DEBUG_LOG("invalid driver found");
 	return FALSE;
 }
 
@@ -39,7 +39,7 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 		NULL
 	)))
 	{
-		DbgPrint("Failed to query module information");
+		DEBUG_ERROR("Failed to query module information");
 		return STATUS_ABANDONED;
 	}
 
@@ -47,12 +47,12 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 	PRTL_MODULE_EXTENDED_INFO driver_information = ExAllocatePool2(
 		POOL_FLAG_NON_PAGED,
 		size,
-		NMI_CB_POOL_TAG
+		SYSTEM_MODULES_POOL
 	);
 
 	if (!driver_information)
 	{
-		DbgPrint("Failed to allocate pool LOL");
+		DEBUG_ERROR("Failed to allocate pool LOL");
 		return STATUS_ABANDONED;
 	}
 
@@ -64,7 +64,7 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 		driver_information
 	)))
 	{
-		DbgPrint("Failed lolz");
+		DEBUG_ERROR("Failed lolz");
 		return STATUS_ABANDONED;
 	}
 	
@@ -85,7 +85,7 @@ VOID AddDriverToList(
 	_In_ PDRIVER_OBJECT Driver
 )
 {
-	PINVALID_DRIVER new_entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVER), NMI_CB_POOL_TAG);
+	PINVALID_DRIVER new_entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVER), INVALID_DRIVER_LIST_ENTRY_POOL);
 
 	if (!new_entry)
 		return;
@@ -101,7 +101,7 @@ VOID RemoveInvalidDriverFromList(_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead)
 	{
 		PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
 		InvalidDriversHead->first_entry = InvalidDriversHead->first_entry->next;
-		ExFreePoolWithTag(entry, NMI_CB_POOL_TAG);
+		ExFreePoolWithTag(entry, INVALID_DRIVER_LIST_ENTRY_POOL);
 	}
 }
 
@@ -111,7 +111,7 @@ VOID EnumerateInvalidDrivers(_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead)
 
 	while (entry != NULL)
 	{
-		DbgPrint("Invalid Driver: %wZ\n", entry->driver->DriverName);
+		DEBUG_LOG("Invalid Driver: %wZ", entry->driver->DriverName);
 		entry = entry->next;
 	}
 }
@@ -143,7 +143,7 @@ NTSTATUS ValidateDriverObjects(
 		&attributes
 	)))
 	{
-		DbgPrint("Failed to query directory object");
+		DEBUG_ERROR("Failed to query directory object");
 		return STATUS_ABANDONED;
 	}
 
@@ -156,7 +156,7 @@ NTSTATUS ValidateDriverObjects(
 		NULL
 	)))
 	{
-		DbgPrint("Failed to reference directory by handle");
+		DEBUG_ERROR("Failed to reference directory by handle");
 		return STATUS_ABANDONED;
 	}
 
@@ -216,9 +216,10 @@ NTSTATUS ValidateDriverObjects(
 	return STATUS_SUCCESS;
 }
 
-BOOLEAN IsInstructionPointerInInvalidRegion(
+NTSTATUS IsInstructionPointerInInvalidRegion(
 	_In_ UINT64 RIP, 
-	_In_ PSYSTEM_MODULES SystemModules
+	_In_ PSYSTEM_MODULES SystemModules,
+	_Out_ PBOOLEAN Result
 )
 {
 	if (!RIP || !SystemModules)
@@ -234,50 +235,57 @@ BOOLEAN IsInstructionPointerInInvalidRegion(
 
 		if (RIP >= base && RIP <= end)
 		{
-			DbgPrint("RIP executing within module: %s\n", system_module.FullPathName);
-			return TRUE;
+			*Result = TRUE;
+			return STATUS_SUCCESS;;
 		}
 	}
 
-	DbgPrint("RIP seems to be executing from within invalid memory\n");
-	return FALSE;
+	*Result = FALSE;
+	return STATUS_SUCCESS;
 }
 
 NTSTATUS AnalyseNmiData(
-	_In_ int numCores, 
+	_In_ INT numCores, 
 	_In_ PSYSTEM_MODULES SystemModules
 )
 {	
 	if (!numCores || !SystemModules)
 		return STATUS_ABANDONED;
 
-	//should check start addresses here for invalid system threads
-
 	for (int i = 0; i < numCores; i++)
 	{
+		PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)nmi_context + i * sizeof(NMI_CONTEXT));
+
+		//Check that our NMI callbacks were run
+		if (!context->nmi_callbacks_run)
+		{
+			DEBUG_LOG("no nmi callbacks were run, nmis potentially disabled");
+			return STATUS_SUCCESS;
+		}
+
 		NMI_CALLBACK_DATA thread_data = *(NMI_CALLBACK_DATA*)(
 			(uintptr_t)thread_data_pool + i * sizeof(NMI_CALLBACK_DATA));
 
-		PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)nmi_context + i * sizeof(NMI_CONTEXT));
+		DEBUG_LOG("cpu number: %i callback count: %i", i, context->nmi_callbacks_run);
 
-		if (!context->nmi_callbacks_run)
-		{
-			DbgPrint("no nmi callbacks were run, nmis potentially disabled\n");
-			return STATUS_ABANDONED;
-		}
+		//Check for PsCreateSystemThread
+		//TODO: Need to check thread start address is either within a valid module or matches an ETHREAD start address
 
-		DbgPrint("callback count: %i\n", context->nmi_callbacks_run);
-
+		//walk the stack :3
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
 		{
 			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)stack_frames + thread_data.stack_frames_offset + i * sizeof(PVOID)));
-			BOOLEAN flag = IsInstructionPointerInInvalidRegion(stack_frame, SystemModules);
+			BOOLEAN flag;
 
-			if (!flag && flag != ERROR)
+			if (!NT_SUCCESS(IsInstructionPointerInInvalidRegion(stack_frame, SystemModules, &flag)))
 			{
-				DbgPrint("RIP was executing in invalid region: %llx\n", stack_frame);
+				DEBUG_ERROR("errro checking RIP for current stack address");
+				continue;
 			}
 
+			flag == TRUE
+				? DEBUG_LOG("RIP: %llx was xecuting within valid module", stack_frame)
+				: DEBUG_ERROR("RIP %llx was executing in INVALID MEMORY", stack_frame);
 		}
 	}
 
@@ -286,7 +294,6 @@ NTSTATUS AnalyseNmiData(
 
 BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 {
-	//TODO need to implement context so we can check if nmis have been disabled
 	UNREFERENCED_PARAMETER(Handled);
 
 	ULONG proc_num = KeGetCurrentProcessorNumber();
@@ -300,6 +307,8 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 		(uintptr_t)stack_frames + proc_num * 0x200,
 		NULL
 	);
+
+	//maybe todo: using the ktrap_frame in kthread to look at register data
 
 	PVOID current_thread = KeGetCurrentThread();
 
@@ -322,7 +331,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)Context + proc_num * sizeof(NMI_CONTEXT));
 	context->nmi_callbacks_run += 1;
 
-	DbgPrint("num nmis called: %i from addr: %llx\n", context->nmi_callbacks_run, (uintptr_t)context);
+	DEBUG_LOG("num nmis called: %i from addr: %llx", context->nmi_callbacks_run, (uintptr_t)context);
 
 	return TRUE;
 }
@@ -330,24 +339,24 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 NTSTATUS LaunchNonMaskableInterrupt(_In_ ULONG NumCores)
 {
 	//Allocate a pool for our Processor affinity structures
-	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KAFFINITY_EX), NMI_CB_POOL_TAG);
+	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KAFFINITY_EX), PROC_AFFINITY_POOL);
 
 	if (!ProcAffinityPool)
 		return STATUS_ABANDONED;
 
-	stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * 0x200, NMI_CB_POOL_TAG);
+	stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * 0x200, STACK_FRAMES_POOL);
 
 	if (!stack_frames)
 		return STATUS_ABANDONED;
 
-	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * sizeof(NMI_CALLBACK_DATA), NMI_CB_POOL_TAG);
+	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * sizeof(NMI_CALLBACK_DATA), THREAD_DATA_POOL);
 
 	if (!thread_data_pool)
 		return STATUS_ABANDONED;
 
-	//Calculate our delay (200ms currently)
+	//Calculate our delay (100ms currently)
 	LARGE_INTEGER delay = { 0 };
-	delay.QuadPart -= 200 * 10000;
+	delay.QuadPart -= 100 * 10000;
 
 	//Iterate over each logical processor to fire NMI
 	for (ULONG core = 0; core < NumCores; core++)
@@ -356,7 +365,7 @@ NTSTATUS LaunchNonMaskableInterrupt(_In_ ULONG NumCores)
 		KeInitializeAffinityEx(ProcAffinityPool);
 		KeAddProcessorAffinityEx(ProcAffinityPool, core);
 
-		DbgPrint("Sending NMI\n");
+		DEBUG_LOG("Sending NMI");
 
 		//Fire our NMI
 		HalSendNMI(ProcAffinityPool);
@@ -366,7 +375,7 @@ NTSTATUS LaunchNonMaskableInterrupt(_In_ ULONG NumCores)
 		KeDelayExecutionThread(KernelMode, FALSE, &delay);
 	}
 
-	ExFreePoolWithTag(ProcAffinityPool, NMI_CB_POOL_TAG);
+	ExFreePoolWithTag(ProcAffinityPool, PROC_AFFINITY_POOL);
 
 	return STATUS_SUCCESS;
 }
@@ -375,20 +384,19 @@ NTSTATUS DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
 {
 	UNREFERENCED_PARAMETER(DriverObject);
 
-	DbgPrint("unloading driver");
+	DEBUG_LOG("unloading driver");
 }
 
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 {
 	UNREFERENCED_PARAMETER(RegistryPath);
-	UNREFERENCED_PARAMETER(DriverObject);
 
 	DriverObject->DriverUnload = DriverUnload;
 
 	//Count cores (NMI's are sent per core)
 	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
 
-	nmi_context = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * sizeof(NMI_CONTEXT), NMI_CB_POOL_TAG);
+	nmi_context = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * sizeof(NMI_CONTEXT), NMI_CONTEXT_POOL);
 
 	if (!nmi_context)
 		return STATUS_ABANDONED;
@@ -401,25 +409,25 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	if (!NT_SUCCESS(LaunchNonMaskableInterrupt(num_cores)))
 	{
-		DbgPrint("Failed to launch NMI");
+		DEBUG_ERROR("Failed to launch NMI");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
 	SYSTEM_MODULES modules;
 	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
-		DbgPrint("Failed to enumerate driver objects");
+		DEBUG_ERROR("Failed to enumerate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
 	if (!NT_SUCCESS(AnalyseNmiData(num_cores, &modules)))
 	{
-		DbgPrint("Failed to analyse the stack walk");
+		DEBUG_ERROR("Failed to analyse the stack walk");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
 	PINVALID_DRIVERS_HEAD head =
-		ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVERS_HEAD), NMI_CB_POOL_TAG);
+		ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVERS_HEAD), INVALID_DRIVER_LIST_HEAD_POOL);
 
 	if (!head)
 		return STATUS_ABANDONED;
@@ -428,13 +436,13 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	if (!NT_SUCCESS(ValidateDriverObjects(&modules, head)))
 	{
-		DbgPrint("Failed to validate driver objects");
+		DEBUG_ERROR("Failed to validate driver objects");
 		return STATUS_FAILED_DRIVER_ENTRY;
 	}
 
 	if (head->count > 0)
 	{
-		DbgPrint("found INVALID drivers with count: %i\n", head->count);
+		DEBUG_LOG("found INVALID drivers with count: %i", head->count);
 		EnumerateInvalidDrivers(head);
 
 		for (int i = 0; i < head->count; i++)
@@ -444,17 +452,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}
 	else
 	{
-		DbgPrint("No INVALID drivers found\n");
+		DEBUG_LOG("No INVALID drivers found");
 	}
 
 	//Unregister our callback + free pools
 	KeDeregisterNmiCallback(NMICallbackHandle);
 
-	ExFreePoolWithTag(nmi_context, NMI_CB_POOL_TAG);
-	ExFreePoolWithTag(stack_frames, NMI_CB_POOL_TAG);
-	ExFreePoolWithTag(head, NMI_CB_POOL_TAG);
-	ExFreePoolWithTag(modules.address, NMI_CB_POOL_TAG);
-	ExFreePoolWithTag(thread_data_pool, NMI_CB_POOL_TAG);
+	ExFreePoolWithTag(nmi_context, NMI_CONTEXT_POOL);
+	ExFreePoolWithTag(stack_frames, STACK_FRAMES_POOL);
+	ExFreePoolWithTag(head, INVALID_DRIVER_LIST_HEAD_POOL);
+	ExFreePoolWithTag(modules.address, SYSTEM_MODULES_POOL);
+	ExFreePoolWithTag(thread_data_pool, THREAD_DATA_POOL);
 
 	return STATUS_SUCCESS;
 }
