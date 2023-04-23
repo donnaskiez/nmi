@@ -170,4 +170,72 @@ Thread Information Block: (GS register)
 	...
 */
 
+/*
+	
+   _KTRAP_FRAME (amd64)
+
+   +0x000 P1Home           : Uint8B
+   +0x008 P2Home           : Uint8B
+   +0x010 P3Home           : Uint8B
+   +0x018 P4Home           : Uint8B
+   +0x020 P5               : Uint8B
+   +0x028 PreviousMode     : Char
+   +0x028 InterruptRetpolineState : UChar
+   +0x029 PreviousIrql     : UChar
+   +0x02a FaultIndicator   : UChar
+   +0x02a NmiMsrIbrs       : UChar
+   +0x02b ExceptionActive  : UChar
+   +0x02c MxCsr            : Uint4B
+   +0x030 Rax              : Uint8B
+   +0x038 Rcx              : Uint8B
+   +0x040 Rdx              : Uint8B
+   +0x048 R8               : Uint8B
+   +0x050 R9               : Uint8B
+   +0x058 R10              : Uint8B
+   +0x060 R11              : Uint8B
+   +0x068 GsBase           : Uint8B
+   +0x068 GsSwap           : Uint8B
+   +0x070 Xmm0             : _M128A
+   +0x080 Xmm1             : _M128A
+   +0x090 Xmm2             : _M128A
+   +0x0a0 Xmm3             : _M128A
+   +0x0b0 Xmm4             : _M128A
+   +0x0c0 Xmm5             : _M128A
+   +0x0d0 FaultAddress     : Uint8B
+   +0x0d0 ContextRecord    : Uint8B
+   +0x0d8 Dr0              : Uint8B
+   +0x0e0 Dr1              : Uint8B
+   +0x0e8 Dr2              : Uint8B
+   +0x0f0 Dr3              : Uint8B
+   +0x0f8 Dr6              : Uint8B
+   +0x100 Dr7              : Uint8B
+   +0x108 DebugControl     : Uint8B
+   +0x110 LastBranchToRip  : Uint8B
+   +0x118 LastBranchFromRip : Uint8B
+   +0x120 LastExceptionToRip : Uint8B
+   +0x128 LastExceptionFromRip : Uint8B
+   +0x130 SegDs            : Uint2B
+   +0x132 SegEs            : Uint2B
+   +0x134 SegFs            : Uint2B
+   +0x136 SegGs            : Uint2B
+   +0x138 TrapFrame        : Uint8B
+   +0x140 Rbx              : Uint8B
+   +0x148 Rdi              : Uint8B
+   +0x150 Rsi              : Uint8B
+   +0x158 Rbp              : Uint8B
+   +0x160 ErrorCode        : Uint8B
+   +0x160 ExceptionFrame   : Uint8B
+   +0x168 Rip              : Uint8B
+   +0x170 SegCs            : Uint2B
+   +0x172 Fill0            : UChar
+   +0x173 Logging          : UChar
+   +0x174 Fill1            : [2] Uint2B
+   +0x178 EFlags           : Uint4B
+   +0x17c Fill2            : Uint4B
+   +0x180 Rsp              : Uint8B
+   +0x188 SegSs            : Uint2B
+   +0x18a Fill3            : Uint2B
+   +0x18c Fill4            : Uint4B
+*/
+
 #endif // !DRIVER_H

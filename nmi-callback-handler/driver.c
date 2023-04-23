@@ -260,9 +260,13 @@ NTSTATUS AnalyseNmiData(
 
 		PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)nmi_context + i * sizeof(NMI_CONTEXT));
 
-		context->nmi_callbacks_run == 0
-			? DbgPrint("no callbacks were run, nmis could have been disabled")
-			: DbgPrint("callback count: %i", context->nmi_callbacks_run);
+		if (!context->nmi_callbacks_run)
+		{
+			DbgPrint("no nmi callbacks were run, nmis potentially disabled\n");
+			return STATUS_ABANDONED;
+		}
+
+		DbgPrint("callback count: %i\n", context->nmi_callbacks_run);
 
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
 		{
@@ -318,7 +322,7 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 	PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)Context + proc_num * sizeof(NMI_CONTEXT));
 	context->nmi_callbacks_run += 1;
 
-	DbgPrint("num nmis called: %i from addr: %llx", context->nmi_callbacks_run, (uintptr_t)context);
+	DbgPrint("num nmis called: %i from addr: %llx\n", context->nmi_callbacks_run, (uintptr_t)context);
 
 	return TRUE;
 }
