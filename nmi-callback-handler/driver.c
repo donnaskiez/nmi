@@ -251,10 +251,18 @@ NTSTATUS AnalyseNmiData(
 	if (!numCores || !SystemModules)
 		return STATUS_ABANDONED;
 
+	//should check start addresses here for invalid system threads
+
 	for (int i = 0; i < numCores; i++)
 	{
 		NMI_CALLBACK_DATA thread_data = *(NMI_CALLBACK_DATA*)(
 			(uintptr_t)thread_data_pool + i * sizeof(NMI_CALLBACK_DATA));
+
+		PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)nmi_context + i * sizeof(NMI_CONTEXT));
+
+		context->nmi_callbacks_run == 0
+			? DbgPrint("no callbacks were run, nmis could have been disabled")
+			: DbgPrint("callback count: %i", context->nmi_callbacks_run);
 
 		for (int i = 0; i < thread_data.num_frames_captured; i++)
 		{
@@ -275,10 +283,7 @@ NTSTATUS AnalyseNmiData(
 BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 {
 	//TODO need to implement context so we can check if nmis have been disabled
-	UNREFERENCED_PARAMETER(Context);
 	UNREFERENCED_PARAMETER(Handled);
-
-	DbgPrint("nmi callback called\n");
 
 	ULONG proc_num = KeGetCurrentProcessorNumber();
 
@@ -309,6 +314,11 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 		&thread_data,
 		sizeof(thread_data)
 	);
+
+	PNMI_CONTEXT context = (PNMI_CONTEXT)((uintptr_t)Context + proc_num * sizeof(NMI_CONTEXT));
+	context->nmi_callbacks_run += 1;
+
+	DbgPrint("num nmis called: %i from addr: %llx", context->nmi_callbacks_run, (uintptr_t)context);
 
 	return TRUE;
 }
@@ -371,14 +381,19 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	DriverObject->DriverUnload = DriverUnload;
 
+	//Count cores (NMI's are sent per core)
+	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
+
+	nmi_context = ExAllocatePool2(POOL_FLAG_NON_PAGED, num_cores * sizeof(NMI_CONTEXT), NMI_CB_POOL_TAG);
+
+	if (!nmi_context)
+		return STATUS_ABANDONED;
+
 	//Register our callback
-	PVOID NMICallbackHandle = KeRegisterNmiCallback(NmiCallback, 0);
+	PVOID NMICallbackHandle = KeRegisterNmiCallback(NmiCallback, nmi_context);
 
 	if (!NMICallbackHandle)
 		return STATUS_ABANDONED;
-
-	//Count cores (NMI's are sent per core)
-	ULONG num_cores = KeQueryActiveProcessorCountEx(0);
 
 	if (!NT_SUCCESS(LaunchNonMaskableInterrupt(num_cores)))
 	{
@@ -431,6 +446,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	//Unregister our callback + free pools
 	KeDeregisterNmiCallback(NMICallbackHandle);
 
+	ExFreePoolWithTag(nmi_context, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(stack_frames, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(head, NMI_CB_POOL_TAG);
 	ExFreePoolWithTag(modules.address, NMI_CB_POOL_TAG);

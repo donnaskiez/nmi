@@ -10,6 +10,7 @@
 
 PVOID thread_data_pool;
 PVOID stack_frames;
+PVOID nmi_context;
 
 /* invalid drivers linked list items */
 
@@ -35,6 +36,12 @@ typedef struct _SYSTEM_MODULES
 	int module_count;
 
 }SYSTEM_MODULES, * PSYSTEM_MODULES;
+
+typedef struct _NMI_CONTEXT
+{
+	int nmi_callbacks_run;
+
+}NMI_CONTEXT, *PNMI_CONTEXT;
 
 /* driver objects information */
 
