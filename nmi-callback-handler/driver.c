@@ -1,12 +1,13 @@
 #include "driver.h"
 
-BOOLEAN ValidateDriverObjectHasBackingModule(
+NTSTATUS ValidateDriverObjectHasBackingModule(
 	_In_ PSYSTEM_MODULES ModuleInformation, 
-	_In_ PDRIVER_OBJECT DriverObject
+	_In_ PDRIVER_OBJECT DriverObject,
+	_Out_ PBOOLEAN Result
 )
 {
 	if (!ModuleInformation || !DriverObject)
-		return ERROR;
+		return STATUS_ABANDONED;
 
 	for (int i = 0; i < ModuleInformation->module_count; i++)
 	{
@@ -15,12 +16,15 @@ BOOLEAN ValidateDriverObjectHasBackingModule(
 
 		if (system_module.ImageBase == DriverObject->DriverStart)
 		{
-			return TRUE;
+			*Result = TRUE;
+			return STATUS_SUCCESS;
 		}
 	}
 
 	DEBUG_LOG("invalid driver found");
-	return FALSE;
+	*Result = FALSE;
+
+	return STATUS_SUCCESS; 
 }
 
 //https://imphash.medium.com/windows-process-internals-a-few-concepts-to-know-before-jumping-on-memory-forensics-part-3-4a0e195d947b
@@ -194,11 +198,19 @@ NTSTATUS ValidateDriverObjects(
 		while (sub_entry)
 		{
 			PDRIVER_OBJECT current_driver = sub_entry->Object;
+			BOOLEAN flag;
 
-			if (!ValidateDriverObjectHasBackingModule(
+			if (!NT_SUCCESS(ValidateDriverObjectHasBackingModule(
 				SystemModules,
-				current_driver
-			))
+				current_driver,
+				&flag
+			)))
+			{
+				DEBUG_LOG("Error validating driver object");
+				return STATUS_ABANDONED;
+			}
+
+			if (!flag)
 			{
 				InvalidDriverListHead->count += 1;
 				AddDriverToList(InvalidDriverListHead, current_driver);
