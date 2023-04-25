@@ -441,7 +441,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
 		DEBUG_ERROR("Failed to enumerate driver objects");
-		goto free_callback;
+		goto free_frames;
 	}
 
 	if (!NT_SUCCESS(AnalyseNmiData(num_cores, &modules)))
@@ -483,9 +483,12 @@ free_head:
 
 	ExFreePoolWithTag(head, INVALID_DRIVER_LIST_HEAD_POOL);
 
-free_modules:
+free_modules: 
 
 	ExFreePoolWithTag(modules.address, SYSTEM_MODULES_POOL);
+
+free_frames:
+
 	ExFreePoolWithTag(stack_frames, STACK_FRAMES_POOL);
 	ExFreePoolWithTag(thread_data_pool, THREAD_DATA_POOL);
 
