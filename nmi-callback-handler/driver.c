@@ -11,10 +11,10 @@ NTSTATUS ValidateDriverObjectHasBackingModule(
 
 	for (int i = 0; i < ModuleInformation->module_count; i++)
 	{
-		RTL_MODULE_EXTENDED_INFO system_module = *(RTL_MODULE_EXTENDED_INFO*)(
+		PRTL_MODULE_EXTENDED_INFO system_module = (PRTL_MODULE_EXTENDED_INFO)(
 			(uintptr_t)ModuleInformation->address + i * sizeof(RTL_MODULE_EXTENDED_INFO));
 
-		if (system_module.ImageBase == DriverObject->DriverStart)
+		if (system_module->ImageBase == DriverObject->DriverStart)
 		{
 			*Result = TRUE;
 			return STATUS_SUCCESS;
@@ -244,11 +244,11 @@ NTSTATUS IsInstructionPointerInInvalidRegion(
 
 	for (int i = 0; i < SystemModules->module_count; i++)
 	{
-		RTL_MODULE_EXTENDED_INFO system_module = *(RTL_MODULE_EXTENDED_INFO*)(
+		PRTL_MODULE_EXTENDED_INFO system_module = (PRTL_MODULE_EXTENDED_INFO)(
 			(uintptr_t)SystemModules->address + i * sizeof(RTL_MODULE_EXTENDED_INFO));
 
-		UINT64 base = (UINT64)system_module.ImageBase;
-		UINT64 end = base + system_module.ImageSize;
+		UINT64 base = (UINT64)system_module->ImageBase;
+		UINT64 end = base + system_module->ImageSize;
 
 		if (RIP >= base && RIP <= end)
 		{
@@ -280,7 +280,7 @@ NTSTATUS AnalyseNmiData(
 			return STATUS_SUCCESS;
 		}
 
-		NMI_CALLBACK_DATA thread_data = *(NMI_CALLBACK_DATA*)(
+		PNMI_CALLBACK_DATA thread_data = (PNMI_CALLBACK_DATA)(
 			(uintptr_t)thread_data_pool + i * sizeof(NMI_CALLBACK_DATA));
 
 		DEBUG_LOG("cpu number: %i callback count: %i", i, context->nmi_callbacks_run);
@@ -289,9 +289,9 @@ NTSTATUS AnalyseNmiData(
 		//TODO: Need to check thread start address is either in valid module or in a user mode proc
 
 		//walk the stack :3
-		for (int i = 0; i < thread_data.num_frames_captured; i++)
+		for (int i = 0; i < thread_data->num_frames_captured; i++)
 		{
-			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)stack_frames + thread_data.stack_frames_offset + i * sizeof(PVOID)));
+			DWORD64 stack_frame = *(DWORD64*)(((uintptr_t)stack_frames + thread_data->stack_frames_offset + i * sizeof(PVOID)));
 			BOOLEAN flag;
 
 			if (!NT_SUCCESS(IsInstructionPointerInInvalidRegion(stack_frame, SystemModules, &flag)))
