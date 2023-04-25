@@ -6,7 +6,7 @@ NTSTATUS ValidateDriverObjectHasBackingModule(
 	_Out_ PBOOLEAN Result
 )
 {
-	if (!ModuleInformation || !DriverObject)
+	if (!ModuleInformation || !DriverObject || !Result)
 		return STATUS_ABANDONED;
 
 	for (int i = 0; i < ModuleInformation->module_count; i++)
@@ -239,7 +239,7 @@ NTSTATUS IsInstructionPointerInInvalidRegion(
 	_Out_ PBOOLEAN Result
 )
 {
-	if (!RIP || !SystemModules)
+	if (!RIP || !SystemModules || !Result)
 		return ERROR;
 
 	for (int i = 0; i < SystemModules->module_count; i++)
