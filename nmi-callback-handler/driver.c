@@ -364,12 +364,19 @@ NTSTATUS LaunchNonMaskableInterrupt(_In_ ULONG NumCores)
 	stack_frames = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * 0x200, STACK_FRAMES_POOL);
 
 	if (!stack_frames)
+	{
+		ExFreePoolWithTag(ProcAffinityPool, PROC_AFFINITY_POOL);
 		return STATUS_ABANDONED;
+	}
 
 	thread_data_pool = ExAllocatePool2(POOL_FLAG_NON_PAGED, NumCores * sizeof(NMI_CALLBACK_DATA), THREAD_DATA_POOL);
 
 	if (!thread_data_pool)
+	{
+		ExFreePoolWithTag(stack_frames, STACK_FRAMES_POOL);
+		ExFreePoolWithTag(ProcAffinityPool, PROC_AFFINITY_POOL);
 		return STATUS_ABANDONED;
+	}
 
 	//Calculate our delay (100ms currently)
 	LARGE_INTEGER delay = { 0 };
@@ -422,39 +429,39 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	PVOID NMICallbackHandle = KeRegisterNmiCallback(NmiCallback, nmi_context);
 
 	if (!NMICallbackHandle)
-		return STATUS_ABANDONED;
+		goto free_context;
 
 	if (!NT_SUCCESS(LaunchNonMaskableInterrupt(num_cores)))
 	{
 		DEBUG_ERROR("Failed to launch NMI");
-		return STATUS_FAILED_DRIVER_ENTRY;
+		goto free_callback;
 	}
 
 	SYSTEM_MODULES modules;
 	if (!NT_SUCCESS(GetSystemModuleInformation(&modules)))
 	{
 		DEBUG_ERROR("Failed to enumerate driver objects");
-		return STATUS_FAILED_DRIVER_ENTRY;
+		goto free_callback;
 	}
 
 	if (!NT_SUCCESS(AnalyseNmiData(num_cores, &modules)))
 	{
 		DEBUG_ERROR("Failed to analyse the stack walk");
-		return STATUS_FAILED_DRIVER_ENTRY;
+		goto free_modules;
 	}
 
 	PINVALID_DRIVERS_HEAD head =
 		ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(INVALID_DRIVERS_HEAD), INVALID_DRIVER_LIST_HEAD_POOL);
 
 	if (!head)
-		return STATUS_ABANDONED;
+		goto free_callback;
 
 	InitDriverList(head);
 
 	if (!NT_SUCCESS(ValidateDriverObjects(&modules, head)))
 	{
 		DEBUG_ERROR("Failed to validate driver objects");
-		return STATUS_FAILED_DRIVER_ENTRY;
+		goto free_head;
 	}
 
 	if (head->count > 0)
@@ -472,14 +479,23 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		DEBUG_LOG("No INVALID drivers found");
 	}
 
-	//Unregister our callback + free pools
+free_head:
+
+	ExFreePoolWithTag(head, INVALID_DRIVER_LIST_HEAD_POOL);
+
+free_modules:
+
+	ExFreePoolWithTag(modules.address, SYSTEM_MODULES_POOL);
+	ExFreePoolWithTag(stack_frames, STACK_FRAMES_POOL);
+	ExFreePoolWithTag(thread_data_pool, THREAD_DATA_POOL);
+
+free_callback:
+
 	KeDeregisterNmiCallback(NMICallbackHandle);
 
+free_context:
+
 	ExFreePoolWithTag(nmi_context, NMI_CONTEXT_POOL);
-	ExFreePoolWithTag(stack_frames, STACK_FRAMES_POOL);
-	ExFreePoolWithTag(head, INVALID_DRIVER_LIST_HEAD_POOL);
-	ExFreePoolWithTag(modules.address, SYSTEM_MODULES_POOL);
-	ExFreePoolWithTag(thread_data_pool, THREAD_DATA_POOL);
 
 	return STATUS_SUCCESS;
 }
