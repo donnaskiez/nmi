@@ -4,6 +4,8 @@
 #include <ntifs.h>
 #include <intrin.h>
 
+#include "nmi.asm"
+
 #define NMI_CONTEXT_POOL '7331'
 #define STACK_FRAMES_POOL 'loop'
 #define INVALID_DRIVER_LIST_HEAD_POOL 'rwar'
@@ -17,6 +19,8 @@
 
 #define DEBUG_LOG(fmt, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, 0, "[+] " fmt "\n", ##__VA_ARGS__)
 #define DEBUG_ERROR(fmt, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, 0, "[-] " fmt "\n", ##__VA_ARGS__)
+
+extern void __declspec(naked) MainAsm();
 
 PVOID thread_data_pool;
 PVOID stack_frames;

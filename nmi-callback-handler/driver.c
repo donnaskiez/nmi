@@ -207,6 +207,11 @@ NTSTATUS ValidateDriverObjects(
 			)))
 			{
 				DEBUG_LOG("Error validating driver object");
+
+				ExReleasePushLockExclusiveEx(&directory_object->Lock, 0);
+				ObDereferenceObject(directory);
+				ZwClose(handle);
+
 				return STATUS_ABANDONED;
 			}
 
