@@ -69,6 +69,7 @@ NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 	)))
 	{
 		DEBUG_ERROR("Failed lolz");
+		ExFreePoolWithTag(driver_information, SYSTEM_MODULES_POOL);
 		return STATUS_ABANDONED;
 	}
 	
