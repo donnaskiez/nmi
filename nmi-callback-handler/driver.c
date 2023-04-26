@@ -7,7 +7,7 @@ NTSTATUS ValidateDriverObjectHasBackingModule(
 )
 {
 	if (!ModuleInformation || !DriverObject || !Result)
-		return STATUS_ABANDONED;
+		return STATUS_INVALID_PARAMETER;
 
 	for (int i = 0; i < ModuleInformation->module_count; i++)
 	{
@@ -31,7 +31,7 @@ NTSTATUS ValidateDriverObjectHasBackingModule(
 NTSTATUS GetSystemModuleInformation(_Out_ PSYSTEM_MODULES ModuleInformation)
 {
 	if (!ModuleInformation)
-		return STATUS_ABANDONED;
+		return STATUS_INVALID_PARAMETER;
 
 	ULONG size = 0;
 
@@ -126,6 +126,9 @@ NTSTATUS ValidateDriverObjects(
 	_In_ PINVALID_DRIVERS_HEAD InvalidDriverListHead
 )
 {
+	if (!SystemModules || !InvalidDriverListHead)
+		return STATUS_INVALID_PARAMETER;
+
 	HANDLE handle;
 
 	OBJECT_ATTRIBUTES attributes = { 0 };
@@ -241,7 +244,7 @@ NTSTATUS IsInstructionPointerInInvalidRegion(
 )
 {
 	if (!RIP || !SystemModules || !Result)
-		return ERROR;
+		return STATUS_INVALID_PARAMETER;
 
 	for (int i = 0; i < SystemModules->module_count; i++)
 	{
@@ -268,7 +271,7 @@ NTSTATUS AnalyseNmiData(
 )
 {	
 	if (!numCores || !SystemModules)
-		return STATUS_ABANDONED;
+		return STATUS_INVALID_PARAMETER;
 
 	for (int i = 0; i < numCores; i++)
 	{
@@ -356,6 +359,9 @@ BOOLEAN NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 
 NTSTATUS LaunchNonMaskableInterrupt(_In_ ULONG NumCores)
 {
+	if (!NumCores)
+		return STATUS_INVALID_PARAMETER;
+
 	//Allocate a pool for our Processor affinity structures
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KAFFINITY_EX), PROC_AFFINITY_POOL);
 
