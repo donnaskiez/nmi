@@ -165,6 +165,7 @@ NTSTATUS ValidateDriverObjects(
 	)))
 	{
 		DEBUG_ERROR("Failed to reference directory by handle");
+		ZwClose(handle);
 		return STATUS_ABANDONED;
 	}
 
