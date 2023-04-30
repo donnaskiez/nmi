@@ -184,9 +184,6 @@ NTSTATUS ValidateDriverObjects(
 
 	POBJECT_DIRECTORY directory_object = (POBJECT_DIRECTORY)directory;
 
-	if (!directory_object)
-		return STATUS_ABANDONED;
-
 	//Lock directory while we are reading it
 	ExAcquirePushLockExclusiveEx(&directory_object->Lock, NULL);
 
