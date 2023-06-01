@@ -14,13 +14,14 @@
 
 #define NUMBER_HASH_BUCKETS 37
 #define ERROR -1
+#define STACK_FRAME_POOL_SIZE 0x200
+
+#define KTHREAD_STACK_BASE_OFFSET 0x030
+#define KTHREAD_STACK_LIMIT_OFFSET 0x038
+#define KTHREAD_START_ADDRESS_OFFSET 0x450
 
 #define DEBUG_LOG(fmt, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, 0, "[+] " fmt "\n", ##__VA_ARGS__)
 #define DEBUG_ERROR(fmt, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, 0, "[-] " fmt "\n", ##__VA_ARGS__)
-
-PVOID thread_data_pool;
-PVOID stack_frames;
-PVOID nmi_context;
 
 /* invalid drivers linked list items */
 
