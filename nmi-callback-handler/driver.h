@@ -20,6 +20,9 @@
 #define KTHREAD_STACK_LIMIT_OFFSET 0x038
 #define KTHREAD_START_ADDRESS_OFFSET 0x450
 
+UNICODE_STRING DEVICE_NAME = RTL_CONSTANT_STRING( L"\\Device\\nmi_handler" );
+UNICODE_STRING DEVICE_SYMBOLIC_LINK = RTL_CONSTANT_STRING( L"\\??\\nmi_handler" );
+
 #define DEBUG_LOG(fmt, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, 0, "[+] " fmt "\n", ##__VA_ARGS__)
 #define DEBUG_ERROR(fmt, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, 0, "[-] " fmt "\n", ##__VA_ARGS__)
 

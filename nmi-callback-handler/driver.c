@@ -1,8 +1,72 @@
 #include "driver.h"
 
-PVOID thread_data_pool;
-PVOID stack_frames;
-PVOID nmi_context;
+#define IOCTL_RUN_NMI_CALLBACKS CTL_CODE(FILE_DEVICE_UNKNOWN, 0x2001, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_VALIDATE_DRIVER_OBJECTS CTL_CODE(FILE_DEVICE_UNKNOWN, 0x2002, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+typedef struct _NMI_POOLS
+{
+	PVOID thread_data_pool;
+	PVOID stack_frames;
+	PVOID nmi_context;
+
+}NMI_POOLS, * PNMI_POOLS;
+
+PVOID nmi_callback_handle = NULL;
+
+/* Global structure to hold pointers to required memory for the NMI's */
+NMI_POOLS nmi_pools = { 0 };
+
+VOID InitDriverList(
+	_In_ PINVALID_DRIVERS_HEAD ListHead
+)
+{
+	ListHead->count = 0;
+	ListHead->first_entry = NULL;
+}
+
+VOID AddDriverToList(
+	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead,
+	_In_ PDRIVER_OBJECT Driver
+)
+{
+	PINVALID_DRIVER new_entry = ExAllocatePool2(
+		POOL_FLAG_NON_PAGED,
+		sizeof( INVALID_DRIVER ),
+		INVALID_DRIVER_LIST_ENTRY_POOL
+	);
+
+	if ( !new_entry )
+		return;
+
+	new_entry->driver = Driver;
+	new_entry->next = InvalidDriversHead->first_entry;
+	InvalidDriversHead->first_entry = new_entry;
+}
+
+VOID RemoveInvalidDriverFromList(
+	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead
+)
+{
+	if ( InvalidDriversHead->first_entry )
+	{
+		PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
+		InvalidDriversHead->first_entry = InvalidDriversHead->first_entry->next;
+		ExFreePoolWithTag( entry, INVALID_DRIVER_LIST_ENTRY_POOL );
+	}
+}
+
+VOID EnumerateInvalidDrivers(
+	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead
+)
+{
+	PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
+
+	while ( entry != NULL )
+	{
+		DEBUG_LOG( "Invalid Driver: %wZ", entry->driver->DriverName );
+		entry = entry->next;
+	}
+}
 
 NTSTATUS ValidateDriverObjectHasBackingModule(
 	_In_ PSYSTEM_MODULES ModuleInformation,
@@ -41,8 +105,10 @@ NTSTATUS GetSystemModuleInformation(
 
 	ULONG size = 0;
 
-	//query system module information without an output buffer to get 
-	//number of bytes required to store all module info structures
+	/*
+	* query system module information without an output buffer to get
+	* number of bytes required to store all module info structures
+	*/
 	if ( !NT_SUCCESS( RtlQueryModuleInformation(
 		&size,
 		sizeof( RTL_MODULE_EXTENDED_INFO ),
@@ -53,7 +119,7 @@ NTSTATUS GetSystemModuleInformation(
 		return STATUS_ABANDONED;
 	}
 
-	//allocate pool big enough to store those structures
+	/* Allocate a pool equal to the output size of RtlQueryModuleInformation */
 	PRTL_MODULE_EXTENDED_INFO driver_information = ExAllocatePool2(
 		POOL_FLAG_NON_PAGED,
 		size,
@@ -66,8 +132,7 @@ NTSTATUS GetSystemModuleInformation(
 		return STATUS_ABANDONED;
 	}
 
-	//query the module information again this time passing the output buffer
-	//to store module information blocks
+	/* Query the modules again this time passing a pointer to the allocated buffer */
 	if ( !NT_SUCCESS( RtlQueryModuleInformation(
 		&size,
 		sizeof( RTL_MODULE_EXTENDED_INFO ),
@@ -83,58 +148,6 @@ NTSTATUS GetSystemModuleInformation(
 	ModuleInformation->module_count = size / sizeof( RTL_MODULE_EXTENDED_INFO );
 
 	return STATUS_SUCCESS;
-}
-
-VOID InitDriverList( 
-	_In_ PINVALID_DRIVERS_HEAD ListHead 
-)
-{
-	ListHead->count = 0;
-	ListHead->first_entry = NULL;
-}
-
-VOID AddDriverToList(
-	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead,
-	_In_ PDRIVER_OBJECT Driver
-)
-{
-	PINVALID_DRIVER new_entry = ExAllocatePool2( 
-		POOL_FLAG_NON_PAGED, 
-		sizeof( INVALID_DRIVER ), 
-		INVALID_DRIVER_LIST_ENTRY_POOL 
-	);
-
-	if ( !new_entry )
-		return;
-
-	new_entry->driver = Driver;
-	new_entry->next = InvalidDriversHead->first_entry;
-	InvalidDriversHead->first_entry = new_entry;
-}
-
-VOID RemoveInvalidDriverFromList( 
-	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead 
-)
-{
-	if ( InvalidDriversHead->first_entry )
-	{
-		PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
-		InvalidDriversHead->first_entry = InvalidDriversHead->first_entry->next;
-		ExFreePoolWithTag( entry, INVALID_DRIVER_LIST_ENTRY_POOL );
-	}
-}
-
-VOID EnumerateInvalidDrivers( 
-	_In_ PINVALID_DRIVERS_HEAD InvalidDriversHead 
-)
-{
-	PINVALID_DRIVER entry = InvalidDriversHead->first_entry;
-
-	while ( entry != NULL )
-	{
-		DEBUG_LOG( "Invalid Driver: %wZ", entry->driver->DriverName );
-		entry = entry->next;
-	}
 }
 
 NTSTATUS ValidateDriverObjects(
@@ -199,7 +212,6 @@ NTSTATUS ValidateDriverObjects(
 
 	POBJECT_DIRECTORY directory_object = ( POBJECT_DIRECTORY )directory;
 
-	//Lock directory while we are reading it
 	ExAcquirePushLockExclusiveEx( &directory_object->Lock, NULL );
 
 	for ( INT i = 0; i < NUMBER_HASH_BUCKETS; i++ )
@@ -211,7 +223,6 @@ NTSTATUS ValidateDriverObjects(
 
 		POBJECT_DIRECTORY_ENTRY sub_entry = entry;
 
-		//walk the entries linked list until entry is null
 		while ( sub_entry )
 		{
 			PDRIVER_OBJECT current_driver = sub_entry->Object;
@@ -224,11 +235,9 @@ NTSTATUS ValidateDriverObjects(
 			) ) )
 			{
 				DEBUG_LOG( "Error validating driver object" );
-
 				ExReleasePushLockExclusiveEx( &directory_object->Lock, 0 );
 				ObDereferenceObject( directory );
 				ZwClose( handle );
-
 				return STATUS_ABANDONED;
 			}
 
@@ -258,6 +267,7 @@ NTSTATUS IsInstructionPointerInInvalidRegion(
 	if ( !RIP || !SystemModules || !Result )
 		return STATUS_INVALID_PARAMETER;
 
+	/* Note that this does not check for HAL or PatchGuard Execution */
 	for ( INT i = 0; i < SystemModules->module_count; i++ )
 	{
 		PRTL_MODULE_EXTENDED_INFO system_module = ( PRTL_MODULE_EXTENDED_INFO )(
@@ -287,9 +297,9 @@ NTSTATUS AnalyseNmiData(
 
 	for ( INT core = 0; core < NumCores; core++ )
 	{
-		PNMI_CONTEXT context = ( PNMI_CONTEXT )( ( uintptr_t )nmi_context + core * sizeof( NMI_CONTEXT ) );
+		PNMI_CONTEXT context = ( PNMI_CONTEXT )( ( uintptr_t )nmi_pools.nmi_context + core * sizeof( NMI_CONTEXT ) );
 
-		//Check that our NMI callbacks were run
+		/* Make sure our NMIs were run  */
 		if ( !context->nmi_callbacks_run )
 		{
 			DEBUG_LOG( "no nmi callbacks were run, nmis potentially disabled" );
@@ -297,17 +307,16 @@ NTSTATUS AnalyseNmiData(
 		}
 
 		PNMI_CALLBACK_DATA thread_data = ( PNMI_CALLBACK_DATA )(
-			( uintptr_t )thread_data_pool + core * sizeof( NMI_CALLBACK_DATA ) );
+			( uintptr_t )nmi_pools.thread_data_pool + core * sizeof( NMI_CALLBACK_DATA ) );
 
 		DEBUG_LOG( "cpu number: %i callback count: %i", core, context->nmi_callbacks_run );
 
-		//Todo: Checks system thread start address
-
-		//walk the stack :3
+		/* Walk the stack */
 		for ( INT frame = 0; frame < thread_data->num_frames_captured; frame++ )
 		{
-			DWORD64 stack_frame = *( DWORD64* )( ( ( uintptr_t )stack_frames + thread_data->stack_frames_offset + frame * sizeof( PVOID ) ) );
 			BOOLEAN flag;
+			DWORD64 stack_frame = *( DWORD64* )( 
+				( ( uintptr_t )nmi_pools.stack_frames + thread_data->stack_frames_offset + frame * sizeof( PVOID ) ) );
 
 			if ( !NT_SUCCESS( IsInstructionPointerInInvalidRegion( stack_frame, SystemModules, &flag ) ) )
 			{
@@ -332,94 +341,90 @@ BOOLEAN NmiCallback(
 	UNREFERENCED_PARAMETER( Handled );
 
 	ULONG proc_num = KeGetCurrentProcessorNumber();
+	PVOID current_thread = KeGetCurrentThread();
+	NMI_CALLBACK_DATA thread_data = { 0 };
 
-	//Cannot allocate pool in this function as it runs at IRQL >= dispatch level
-	//so ive just allocated a global pool with size equal to 0x200 * num_procs
-
+	/* 
+	* Cannot allocate pool in this function as it runs at IRQL >= dispatch level
+	* so ive just allocated a global pool with size equal to 0x200 * num_procs
+	*/
 	INT num_frames_captured = RtlCaptureStackBackTrace(
-		0,
+		NULL,
 		STACK_FRAME_POOL_SIZE,
-		( uintptr_t )stack_frames + proc_num * STACK_FRAME_POOL_SIZE,
+		( uintptr_t )nmi_pools.stack_frames + proc_num * STACK_FRAME_POOL_SIZE,
 		NULL
 	);
 
-	//maybe todo: using the ktrap_frame in kthread to look at register data
-
-	PVOID current_thread = KeGetCurrentThread();
-
-	NMI_CALLBACK_DATA thread_data = { 0 };
-
+	/* 
+	* This function is run in the context of the interrupted thread hence we can
+	* gather any and all information regarding the thread that may be useful for analysis
+	*/
 	thread_data.kthread_address = ( UINT64 )current_thread;
 	thread_data.kprocess_address = ( UINT64 )PsGetCurrentProcess();
 	thread_data.stack_base = *( ( UINT64* )( ( uintptr_t )current_thread + KTHREAD_STACK_BASE_OFFSET ) );
 	thread_data.stack_limit = *( ( UINT64* )( ( uintptr_t )current_thread + KTHREAD_STACK_LIMIT_OFFSET ) );
-	thread_data.start_address = *( ( UINT64* )( ( uintptr_t )current_thread + KTHREAD_START_ADDRESS_OFFSET ) );		//can be spoofed but still a decent detection vector
+	thread_data.start_address = *( ( UINT64* )( ( uintptr_t )current_thread + KTHREAD_START_ADDRESS_OFFSET ) );
 	thread_data.cr3 = __readcr3();
 	thread_data.stack_frames_offset = proc_num * STACK_FRAME_POOL_SIZE;
 	thread_data.num_frames_captured = num_frames_captured;
 
 	RtlCopyMemory(
-		( ( uintptr_t )thread_data_pool ) + proc_num * sizeof( thread_data ),
+		( ( uintptr_t )nmi_pools.thread_data_pool ) + proc_num * sizeof( thread_data ),
 		&thread_data,
 		sizeof( thread_data )
 	);
 
 	PNMI_CONTEXT context = ( PNMI_CONTEXT )( ( uintptr_t )Context + proc_num * sizeof( NMI_CONTEXT ) );
 	context->nmi_callbacks_run += 1;
-
 	DEBUG_LOG( "num nmis called: %i from addr: %llx", context->nmi_callbacks_run, ( uintptr_t )context );
 
 	return TRUE;
 }
 
 NTSTATUS LaunchNonMaskableInterrupt( 
-	_In_ ULONG NumCores 
+	_In_ ULONG NumCores
 )
 {
 	if ( !NumCores )
 		return STATUS_INVALID_PARAMETER;
 
-	//Allocate a pool for our Processor affinity structures
 	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2( POOL_FLAG_NON_PAGED, sizeof( KAFFINITY_EX ), PROC_AFFINITY_POOL );
 
 	if ( !ProcAffinityPool )
 		return STATUS_ABANDONED;
 
-	stack_frames = ExAllocatePool2( POOL_FLAG_NON_PAGED, NumCores * 0x200, STACK_FRAMES_POOL );
+	nmi_pools.stack_frames = ExAllocatePool2( POOL_FLAG_NON_PAGED, NumCores * STACK_FRAME_POOL_SIZE, STACK_FRAMES_POOL );
 
-	if ( !stack_frames )
+	if ( !nmi_pools.stack_frames )
 	{
 		ExFreePoolWithTag( ProcAffinityPool, PROC_AFFINITY_POOL );
 		return STATUS_ABANDONED;
 	}
 
-	thread_data_pool = ExAllocatePool2( POOL_FLAG_NON_PAGED, NumCores * sizeof( NMI_CALLBACK_DATA ), THREAD_DATA_POOL );
+	nmi_pools.thread_data_pool = ExAllocatePool2( POOL_FLAG_NON_PAGED, NumCores * sizeof( NMI_CALLBACK_DATA ), THREAD_DATA_POOL );
 
-	if ( !thread_data_pool )
+	if ( !nmi_pools.thread_data_pool )
 	{
-		ExFreePoolWithTag( stack_frames, STACK_FRAMES_POOL );
+		ExFreePoolWithTag( nmi_pools.stack_frames, STACK_FRAMES_POOL );
 		ExFreePoolWithTag( ProcAffinityPool, PROC_AFFINITY_POOL );
 		return STATUS_ABANDONED;
 	}
 
-	//Calculate our delay (100ms currently)
 	LARGE_INTEGER delay = { 0 };
 	delay.QuadPart -= 100 * 10000;
 
-	//Iterate over each logical processor to fire NMI
 	for ( ULONG core = 0; core < NumCores; core++ )
 	{
-		//Bind the interrupted thread to the logical processor its running on
 		KeInitializeAffinityEx( ProcAffinityPool );
 		KeAddProcessorAffinityEx( ProcAffinityPool, core );
 
 		DEBUG_LOG( "Sending NMI" );
-
-		//Fire our NMI
 		HalSendNMI( ProcAffinityPool );
 
-		//Delay sending the NMI to each processor since only 1 NMI can be 
-		//active at any one time
+		/*
+		* Only a single NMI can be active at any given time, so arbitrarily
+		* delay execution  to allow time for the NMI to be processed
+		*/
 		KeDelayExecutionThread( KernelMode, FALSE, &delay );
 	}
 
@@ -428,70 +433,116 @@ NTSTATUS LaunchNonMaskableInterrupt(
 	return STATUS_SUCCESS;
 }
 
-NTSTATUS DriverUnload( 
+VOID DriverUnload( 
 	_In_ PDRIVER_OBJECT DriverObject 
 )
 {
 	UNREFERENCED_PARAMETER( DriverObject );
-
 	DEBUG_LOG( "unloading driver" );
+	KeDeregisterNmiCallback( nmi_callback_handle);
+	ExFreePoolWithTag( nmi_pools.nmi_context, NMI_CONTEXT_POOL );
 }
 
-NTSTATUS DriverEntry( 
-	_In_ PDRIVER_OBJECT DriverObject, 
-	_In_ PUNICODE_STRING RegistryPath 
+NTSTATUS DriverCreate(
+	_In_ PDEVICE_OBJECT DeviceObject,
+	_In_ PIRP Irp
 )
 {
-	UNREFERENCED_PARAMETER( RegistryPath );
+	UNREFERENCED_PARAMETER( DeviceObject );
+	DEBUG_LOG( "Handle to device opened" );
+	IoCompleteRequest( Irp, IO_NO_INCREMENT );
+	return STATUS_SUCCESS;
+}
 
-	DriverObject->DriverUnload = DriverUnload;
+NTSTATUS DriverClose(
+	_In_ PDEVICE_OBJECT DeviceObject,
+	_In_ PIRP Irp
+)
+{
+	UNREFERENCED_PARAMETER( DeviceObject );
+	DEBUG_LOG( "Handle to device closed" );
+	IoCompleteRequest( Irp, IO_NO_INCREMENT );
+	return STATUS_SUCCESS;
+}
 
-	//Count cores (NMI's are sent per core)
+NTSTATUS HandleNmiIOCTL()
+{
+	NTSTATUS status = STATUS_SUCCESS;
+	SYSTEM_MODULES system_modules = { 0 };
 	ULONG num_cores = KeQueryActiveProcessorCountEx( 0 );
 
-	nmi_context = ExAllocatePool2( POOL_FLAG_NON_PAGED, num_cores * sizeof( NMI_CONTEXT ), NMI_CONTEXT_POOL );
+	/* Fix annoying visual studio linting error */
+	RtlZeroMemory( &system_modules, sizeof( SYSTEM_MODULES ) );
 
-	if ( !nmi_context )
-		return STATUS_ABANDONED;
+	/*
+	* We query the system modules each time since they can potentially
+	* change at any time
+	*/
+	status = GetSystemModuleInformation( &system_modules );
 
-	//Register our callback
-	PVOID NMICallbackHandle = KeRegisterNmiCallback( NmiCallback, nmi_context );
-
-	if ( !NMICallbackHandle )
-		goto free_context;
-
-	if ( !NT_SUCCESS( LaunchNonMaskableInterrupt( num_cores ) ) )
+	if ( !NT_SUCCESS( status ) )
 	{
-		DEBUG_ERROR( "Failed to launch NMI" );
-		goto free_callback;
+		DEBUG_ERROR( "Error retriving system module information" );
+		return status;
 	}
+	status = LaunchNonMaskableInterrupt( num_cores );
 
-	SYSTEM_MODULES modules;
-
-	if ( !NT_SUCCESS( GetSystemModuleInformation( &modules ) ) )
+	if ( !NT_SUCCESS( status ) )
 	{
-		DEBUG_ERROR( "Failed to enumerate driver objects" );
-		goto free_frames;
+		DEBUG_ERROR( "Error running NMI callbacks" );
+		ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
+		return status;
 	}
+	status = AnalyseNmiData( num_cores, &system_modules );
 
-	if ( !NT_SUCCESS( AnalyseNmiData( num_cores, &modules ) ) )
+	if ( !NT_SUCCESS( status ) )
+		DEBUG_ERROR( "Error analysing nmi data" );
+
+	ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
+	ExFreePoolWithTag( nmi_pools.stack_frames, STACK_FRAMES_POOL );
+	ExFreePoolWithTag( nmi_pools.thread_data_pool, THREAD_DATA_POOL );
+
+	return status;
+}
+
+NTSTATUS HandleValidateDriversIOCTL()
+{
+	NTSTATUS status = STATUS_SUCCESS;
+	SYSTEM_MODULES system_modules = { 0 };
+
+	/* Fix annoying visual studio linting error */
+	RtlZeroMemory( &system_modules, sizeof( SYSTEM_MODULES ) );
+
+	status = GetSystemModuleInformation( &system_modules );
+
+	if ( !NT_SUCCESS( status ) )
 	{
-		DEBUG_ERROR( "Failed to analyse the stack walk" );
-		goto free_modules;
+		DEBUG_ERROR( "Error retriving system module information" );
+		return status;
 	}
 
 	PINVALID_DRIVERS_HEAD head =
 		ExAllocatePool2( POOL_FLAG_NON_PAGED, sizeof( INVALID_DRIVERS_HEAD ), INVALID_DRIVER_LIST_HEAD_POOL );
 
 	if ( !head )
-		goto free_modules;
+	{
+		ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
+		return STATUS_ABANDONED;
+	}
+
+	/*
+	* Use a linked list here so that so we have easy access to the invalid drivers
+	* which we can then use to copy the drivers logic for further analysis in
+	* identifying drivers specifically used for the purpose of cheating
+	*/
 
 	InitDriverList( head );
 
-	if ( !NT_SUCCESS( ValidateDriverObjects( &modules, head ) ) )
+	if ( !NT_SUCCESS( ValidateDriverObjects( &system_modules, head ) ) )
 	{
 		DEBUG_ERROR( "Failed to validate driver objects" );
-		goto free_head;
+		ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
+		return STATUS_ABANDONED;
 	}
 
 	if ( head->count > 0 )
@@ -500,35 +551,131 @@ NTSTATUS DriverEntry(
 		EnumerateInvalidDrivers( head );
 
 		for ( INT i = 0; i < head->count; i++ )
-		{
-			RemoveInvalidDriverFromList( head );
+		{ 
+			RemoveInvalidDriverFromList( head ); 
 		}
 	}
 	else
 	{
-		DEBUG_LOG( "No INVALID drivers found" );
+		DEBUG_LOG( "No INVALID drivers found :)" );
 	}
 
-free_head:
-
 	ExFreePoolWithTag( head, INVALID_DRIVER_LIST_HEAD_POOL );
+	ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
+	return status;
+}
 
-free_modules:
+NTSTATUS MajorControl(
+	_In_ PDRIVER_OBJECT DriverObject,
+	_In_ PIRP Irp
+)
+{
+	UNREFERENCED_PARAMETER( DriverObject );
 
-	ExFreePoolWithTag( modules.address, SYSTEM_MODULES_POOL );
+	NTSTATUS status = STATUS_SUCCESS;
+	PIO_STACK_LOCATION stack_location = IoGetCurrentIrpStackLocation( Irp );
+	HANDLE handle;
 
-free_frames:
+	switch ( stack_location->Parameters.DeviceIoControl.IoControlCode )
+	{
+	case IOCTL_RUN_NMI_CALLBACKS:
+		DEBUG_LOG( "IOCTL_RUN_NMI_CALLBACKS Received" );
 
-	ExFreePoolWithTag( stack_frames, STACK_FRAMES_POOL );
-	ExFreePoolWithTag( thread_data_pool, THREAD_DATA_POOL );
+		status = HandleNmiIOCTL();
 
-free_callback:
+		if ( !NT_SUCCESS( status ) )
+			DEBUG_ERROR( "Failed to handle NMI IOCTL" );
 
-	KeDeregisterNmiCallback( NMICallbackHandle );
+		break;
 
-free_context:
+	case IOCTL_VALIDATE_DRIVER_OBJECTS:
+		DEBUG_LOG( "IOCTL_VALIDATE_DRIVER_OBJECTS Received" );
 
-	ExFreePoolWithTag( nmi_context, NMI_CONTEXT_POOL );
+		/*
+		* The reason this function is run in a new thread and not the thread
+		* issuing the IOCTL is because ZwOpenDirectoryObject issues a 
+		* user mode handle if called on the user mode thread calling DeviceIoControl.
+		* This is a problem because when we pass said handle ObReferenceObjectByHandle
+		* it will issue a bug check under windows driver verifier.
+		*/
 
-	return STATUS_SUCCESS;
+		status = PsCreateSystemThread(
+			&handle,
+			PROCESS_ALL_ACCESS,
+			NULL,
+			NULL,
+			NULL,
+			HandleValidateDriversIOCTL,
+			NULL
+		);
+
+		if ( !NT_SUCCESS( status ) )
+			DEBUG_ERROR( "Failed to start thread to validate system drivers" );
+
+		break;
+	}
+
+	Irp->IoStatus.Status = status;
+	IoCompleteRequest( Irp, IO_NO_INCREMENT );
+	return status;
+}
+
+NTSTATUS DriverEntry(
+	_In_ PDRIVER_OBJECT DriverObject,
+	_In_ PUNICODE_STRING RegistryPath
+)
+{
+	UNREFERENCED_PARAMETER( RegistryPath );
+
+	NTSTATUS status = STATUS_SUCCESS;
+	ULONG num_cores = KeQueryActiveProcessorCountEx( 0 );
+
+	status = IoCreateDevice(
+		DriverObject,
+		0,
+		&DEVICE_NAME,
+		FILE_DEVICE_UNKNOWN,
+		FILE_DEVICE_SECURE_OPEN,
+		FALSE,
+		&DriverObject->DeviceObject
+	);
+
+	if ( !NT_SUCCESS( status ) )
+		return status;
+
+	status = IoCreateSymbolicLink( &DEVICE_SYMBOLIC_LINK, &DEVICE_NAME );
+
+	if ( !NT_SUCCESS( status ) )
+	{
+		IoDeleteDevice( &DriverObject->DeviceObject );
+		return status;
+	}
+
+	DriverObject->MajorFunction[ IRP_MJ_DEVICE_CONTROL ] = MajorControl;
+	DriverObject->MajorFunction[ IRP_MJ_CREATE ] = DriverCreate;
+	DriverObject->MajorFunction[ IRP_MJ_CLOSE ] = DriverClose;
+	DriverObject->DriverUnload = DriverUnload;
+
+	RtlZeroMemory( &nmi_pools, sizeof( NMI_POOLS ) );
+
+	nmi_pools.nmi_context = ExAllocatePool2( POOL_FLAG_NON_PAGED, num_cores * sizeof( NMI_CONTEXT ), NMI_CONTEXT_POOL );
+
+	if ( !nmi_pools.nmi_context )
+	{
+		IoDeleteDevice( &DriverObject->DeviceObject );
+		IoDeleteSymbolicLink( &DEVICE_SYMBOLIC_LINK );
+		return status;
+	}
+
+	nmi_callback_handle = KeRegisterNmiCallback( NmiCallback, nmi_pools.nmi_context );
+
+	if ( !nmi_callback_handle )
+	{
+		ExFreePoolWithTag( nmi_pools.nmi_context, NMI_CONTEXT_POOL );
+		IoDeleteDevice( &DriverObject->DeviceObject );
+		IoDeleteSymbolicLink( &DEVICE_SYMBOLIC_LINK );
+		return STATUS_FAILED_DRIVER_ENTRY;
+	}
+
+	return status;
 }
