@@ -613,6 +613,10 @@ NTSTATUS MajorControl(
 			DEBUG_ERROR( "Failed to start thread to validate system drivers" );
 
 		break;
+
+	default:
+		DEBUG_ERROR( "Invalid IOCTl code passed" );
+		break;
 	}
 
 	Irp->IoStatus.Status = status;
