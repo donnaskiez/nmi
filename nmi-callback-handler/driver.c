@@ -3,18 +3,20 @@
 #define IOCTL_RUN_NMI_CALLBACKS CTL_CODE(FILE_DEVICE_UNKNOWN, 0x2001, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_VALIDATE_DRIVER_OBJECTS CTL_CODE(FILE_DEVICE_UNKNOWN, 0x2002, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
-typedef struct _NMI_POOLS
+typedef struct _NMI_CORE_CONTEXT
+{
+	INT nmi_callbacks_run;
+
+}NMI_CORE_CONTEXT, * PNMI_CORE_CONTEXT;
+
+typedef struct _NMI_CONTEXT
 {
 	PVOID thread_data_pool;
 	PVOID stack_frames;
-	PVOID nmi_context;
+	PVOID nmi_core_context;
+	INT core_count;
 
-}NMI_POOLS, * PNMI_POOLS;
-
-PVOID nmi_callback_handle = NULL;
-
-/* Global structure to hold pointers to required memory for the NMI's */
-NMI_POOLS nmi_pools = { 0 };
+}NMI_CONTEXT, * PNMI_CONTEXT;
 
 VOID InitDriverList(
 	_In_ PINVALID_DRIVERS_HEAD ListHead
@@ -288,16 +290,16 @@ NTSTATUS IsInstructionPointerInInvalidRegion(
 }
 
 NTSTATUS AnalyseNmiData(
-	_In_ INT NumCores,
+	_In_ PNMI_CONTEXT NmiContext,
 	_In_ PSYSTEM_MODULES SystemModules
 )
 {
-	if ( !NumCores || !SystemModules )
+	if ( !NmiContext || !SystemModules )
 		return STATUS_INVALID_PARAMETER;
 
-	for ( INT core = 0; core < NumCores; core++ )
+	for ( INT core = 0; core < NmiContext->core_count; core++ )
 	{
-		PNMI_CONTEXT context = ( PNMI_CONTEXT )( ( uintptr_t )nmi_pools.nmi_context + core * sizeof( NMI_CONTEXT ) );
+		PNMI_CORE_CONTEXT context = ( PNMI_CORE_CONTEXT )( ( uintptr_t )NmiContext->nmi_core_context + core * sizeof( NMI_CORE_CONTEXT ) );
 
 		/* Make sure our NMIs were run  */
 		if ( !context->nmi_callbacks_run )
@@ -307,7 +309,7 @@ NTSTATUS AnalyseNmiData(
 		}
 
 		PNMI_CALLBACK_DATA thread_data = ( PNMI_CALLBACK_DATA )(
-			( uintptr_t )nmi_pools.thread_data_pool + core * sizeof( NMI_CALLBACK_DATA ) );
+			( uintptr_t )NmiContext->thread_data_pool + core * sizeof( NMI_CALLBACK_DATA ) );
 
 		DEBUG_LOG( "cpu number: %i callback count: %i", core, context->nmi_callbacks_run );
 
@@ -316,7 +318,7 @@ NTSTATUS AnalyseNmiData(
 		{
 			BOOLEAN flag;
 			DWORD64 stack_frame = *( DWORD64* )( 
-				( ( uintptr_t )nmi_pools.stack_frames + thread_data->stack_frames_offset + frame * sizeof( PVOID ) ) );
+				( ( uintptr_t )NmiContext->stack_frames + thread_data->stack_frames_offset + frame * sizeof( PVOID ) ) );
 
 			if ( !NT_SUCCESS( IsInstructionPointerInInvalidRegion( stack_frame, SystemModules, &flag ) ) )
 			{
@@ -340,9 +342,10 @@ BOOLEAN NmiCallback(
 {
 	UNREFERENCED_PARAMETER( Handled );
 
-	ULONG proc_num = KeGetCurrentProcessorNumber();
 	PVOID current_thread = KeGetCurrentThread();
 	NMI_CALLBACK_DATA thread_data = { 0 };
+	PNMI_CONTEXT nmi_context = ( PNMI_CONTEXT )Context;
+	ULONG proc_num = KeGetCurrentProcessorNumber();
 
 	/* 
 	* Cannot allocate pool in this function as it runs at IRQL >= dispatch level
@@ -351,7 +354,7 @@ BOOLEAN NmiCallback(
 	INT num_frames_captured = RtlCaptureStackBackTrace(
 		NULL,
 		STACK_FRAME_POOL_SIZE,
-		( uintptr_t )nmi_pools.stack_frames + proc_num * STACK_FRAME_POOL_SIZE,
+		( uintptr_t )nmi_context->stack_frames + proc_num * STACK_FRAME_POOL_SIZE,
 		NULL
 	);
 
@@ -369,51 +372,65 @@ BOOLEAN NmiCallback(
 	thread_data.num_frames_captured = num_frames_captured;
 
 	RtlCopyMemory(
-		( ( uintptr_t )nmi_pools.thread_data_pool ) + proc_num * sizeof( thread_data ),
+		( ( uintptr_t )nmi_context->thread_data_pool ) + proc_num * sizeof( thread_data ),
 		&thread_data,
 		sizeof( thread_data )
 	);
 
-	PNMI_CONTEXT context = ( PNMI_CONTEXT )( ( uintptr_t )Context + proc_num * sizeof( NMI_CONTEXT ) );
-	context->nmi_callbacks_run += 1;
-	DEBUG_LOG( "num nmis called: %i from addr: %llx", context->nmi_callbacks_run, ( uintptr_t )context );
+	PNMI_CORE_CONTEXT core_context = 
+		( PNMI_CORE_CONTEXT )( ( uintptr_t )nmi_context->nmi_core_context + proc_num * sizeof( NMI_CORE_CONTEXT ) );
+	core_context->nmi_callbacks_run += 1;
+	DEBUG_LOG( "core number: %lx, num nmis run: %i", proc_num, core_context->nmi_callbacks_run );
 
 	return TRUE;
 }
 
 NTSTATUS LaunchNonMaskableInterrupt( 
-	_In_ ULONG NumCores
+	_In_ PNMI_CONTEXT NmiContext
 )
 {
-	if ( !NumCores )
+	if ( !NmiContext )
 		return STATUS_INVALID_PARAMETER;
 
-	PKAFFINITY_EX ProcAffinityPool = ExAllocatePool2( POOL_FLAG_NON_PAGED, sizeof( KAFFINITY_EX ), PROC_AFFINITY_POOL );
+	PKAFFINITY_EX ProcAffinityPool = 
+		ExAllocatePool2( POOL_FLAG_NON_PAGED, sizeof( KAFFINITY_EX ), PROC_AFFINITY_POOL );
 
 	if ( !ProcAffinityPool )
-		return STATUS_ABANDONED;
+		return STATUS_MEMORY_NOT_ALLOCATED;
 
-	nmi_pools.stack_frames = ExAllocatePool2( POOL_FLAG_NON_PAGED, NumCores * STACK_FRAME_POOL_SIZE, STACK_FRAMES_POOL );
+	NmiContext->stack_frames = 
+		ExAllocatePool2( POOL_FLAG_NON_PAGED, NmiContext->core_count * STACK_FRAME_POOL_SIZE, STACK_FRAMES_POOL );
 
-	if ( !nmi_pools.stack_frames )
+	if ( !NmiContext->stack_frames )
 	{
 		ExFreePoolWithTag( ProcAffinityPool, PROC_AFFINITY_POOL );
-		return STATUS_ABANDONED;
+		return STATUS_MEMORY_NOT_ALLOCATED;
 	}
 
-	nmi_pools.thread_data_pool = ExAllocatePool2( POOL_FLAG_NON_PAGED, NumCores * sizeof( NMI_CALLBACK_DATA ), THREAD_DATA_POOL );
+	NmiContext->thread_data_pool = 
+		ExAllocatePool2( POOL_FLAG_NON_PAGED, NmiContext->core_count * sizeof( NMI_CALLBACK_DATA ), THREAD_DATA_POOL );
 
-	if ( !nmi_pools.thread_data_pool )
+	if ( !NmiContext->thread_data_pool )
 	{
-		ExFreePoolWithTag( nmi_pools.stack_frames, STACK_FRAMES_POOL );
+		ExFreePoolWithTag( NmiContext->stack_frames, STACK_FRAMES_POOL );
 		ExFreePoolWithTag( ProcAffinityPool, PROC_AFFINITY_POOL );
-		return STATUS_ABANDONED;
+		return STATUS_MEMORY_NOT_ALLOCATED;
+	}
+
+	PVOID registration_handle = KeRegisterNmiCallback( NmiCallback, NmiContext );
+
+	if ( !registration_handle )
+	{
+		ExFreePoolWithTag( NmiContext->thread_data_pool, THREAD_DATA_POOL );
+		ExFreePoolWithTag( NmiContext->stack_frames, STACK_FRAMES_POOL );
+		ExFreePoolWithTag( ProcAffinityPool, PROC_AFFINITY_POOL );
+		return STATUS_MEMORY_NOT_ALLOCATED;
 	}
 
 	LARGE_INTEGER delay = { 0 };
 	delay.QuadPart -= 100 * 10000;
 
-	for ( ULONG core = 0; core < NumCores; core++ )
+	for ( ULONG core = 0; core < NmiContext->core_count; core++ )
 	{
 		KeInitializeAffinityEx( ProcAffinityPool );
 		KeAddProcessorAffinityEx( ProcAffinityPool, core );
@@ -428,6 +445,7 @@ NTSTATUS LaunchNonMaskableInterrupt(
 		KeDelayExecutionThread( KernelMode, FALSE, &delay );
 	}
 
+	KeDeregisterNmiCallback( registration_handle );
 	ExFreePoolWithTag( ProcAffinityPool, PROC_AFFINITY_POOL );
 
 	return STATUS_SUCCESS;
@@ -439,8 +457,6 @@ VOID DriverUnload(
 {
 	UNREFERENCED_PARAMETER( DriverObject );
 	DEBUG_LOG( "unloading driver" );
-	KeDeregisterNmiCallback( nmi_callback_handle);
-	ExFreePoolWithTag( nmi_pools.nmi_context, NMI_CONTEXT_POOL );
 }
 
 NTSTATUS DriverCreate(
@@ -469,10 +485,14 @@ NTSTATUS HandleNmiIOCTL()
 {
 	NTSTATUS status = STATUS_SUCCESS;
 	SYSTEM_MODULES system_modules = { 0 };
-	ULONG num_cores = KeQueryActiveProcessorCountEx( 0 );
+	NMI_CONTEXT nmi_context = { 0 };
 
-	/* Fix annoying visual studio linting error */
-	RtlZeroMemory( &system_modules, sizeof( SYSTEM_MODULES ) );
+	nmi_context.core_count = KeQueryActiveProcessorCountEx( 0 );
+	nmi_context.nmi_core_context = 
+		ExAllocatePool2( POOL_FLAG_NON_PAGED, nmi_context.core_count * sizeof( NMI_CORE_CONTEXT ), NMI_CONTEXT_POOL );
+
+	if ( !nmi_context.nmi_core_context )
+		return STATUS_MEMORY_NOT_ALLOCATED;
 
 	/*
 	* We query the system modules each time since they can potentially
@@ -485,22 +505,29 @@ NTSTATUS HandleNmiIOCTL()
 		DEBUG_ERROR( "Error retriving system module information" );
 		return status;
 	}
-	status = LaunchNonMaskableInterrupt( num_cores );
+
+	status = LaunchNonMaskableInterrupt( &nmi_context );
 
 	if ( !NT_SUCCESS( status ) )
 	{
 		DEBUG_ERROR( "Error running NMI callbacks" );
 		ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
+		ExFreePoolWithTag( nmi_context.nmi_core_context, NMI_CONTEXT_POOL );
 		return status;
 	}
-	status = AnalyseNmiData( num_cores, &system_modules );
+
+	status = AnalyseNmiData( &nmi_context, &system_modules );
 
 	if ( !NT_SUCCESS( status ) )
 		DEBUG_ERROR( "Error analysing nmi data" );
 
 	ExFreePoolWithTag( system_modules.address, SYSTEM_MODULES_POOL );
-	ExFreePoolWithTag( nmi_pools.stack_frames, STACK_FRAMES_POOL );
-	ExFreePoolWithTag( nmi_pools.thread_data_pool, THREAD_DATA_POOL );
+	ExFreePoolWithTag( nmi_context.nmi_core_context, NMI_CONTEXT_POOL );
+
+	if (nmi_context.stack_frames )
+		ExFreePoolWithTag( nmi_context.stack_frames, STACK_FRAMES_POOL );
+	if (nmi_context.thread_data_pool )
+		ExFreePoolWithTag( nmi_context.thread_data_pool, THREAD_DATA_POOL );
 
 	return status;
 }
@@ -659,27 +686,6 @@ NTSTATUS DriverEntry(
 	DriverObject->MajorFunction[ IRP_MJ_CREATE ] = DriverCreate;
 	DriverObject->MajorFunction[ IRP_MJ_CLOSE ] = DriverClose;
 	DriverObject->DriverUnload = DriverUnload;
-
-	RtlZeroMemory( &nmi_pools, sizeof( NMI_POOLS ) );
-
-	nmi_pools.nmi_context = ExAllocatePool2( POOL_FLAG_NON_PAGED, num_cores * sizeof( NMI_CONTEXT ), NMI_CONTEXT_POOL );
-
-	if ( !nmi_pools.nmi_context )
-	{
-		IoDeleteDevice( &DriverObject->DeviceObject );
-		IoDeleteSymbolicLink( &DEVICE_SYMBOLIC_LINK );
-		return status;
-	}
-
-	nmi_callback_handle = KeRegisterNmiCallback( NmiCallback, nmi_pools.nmi_context );
-
-	if ( !nmi_callback_handle )
-	{
-		ExFreePoolWithTag( nmi_pools.nmi_context, NMI_CONTEXT_POOL );
-		IoDeleteDevice( &DriverObject->DeviceObject );
-		IoDeleteSymbolicLink( &DEVICE_SYMBOLIC_LINK );
-		return STATUS_FAILED_DRIVER_ENTRY;
-	}
 
 	return status;
 }

@@ -51,12 +51,6 @@ typedef struct _SYSTEM_MODULES
 
 }SYSTEM_MODULES, * PSYSTEM_MODULES;
 
-typedef struct _NMI_CONTEXT
-{
-	INT nmi_callbacks_run;
-
-}NMI_CONTEXT, *PNMI_CONTEXT;
-
 /* driver objects information */
 
 /*
