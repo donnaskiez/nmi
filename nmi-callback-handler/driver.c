@@ -284,9 +284,9 @@ AnalyseNmiData(_In_ PNMI_CONTEXT NmiContext, _In_ PSYSTEM_MODULES SystemModules)
         return STATUS_SUCCESS;
 }
 
-#define IA32_GS_BASE         0xc0000101
-#define KPCR_TSS_BASE_OFFSET 0x008
-#define TSS_IST_OFFSET       0x01c
+#define IA32_GS_BASE                 0xc0000101
+#define KPCR_TSS_BASE_OFFSET         0x008
+#define TSS_IST_OFFSET               0x01c
 #define WINDOWS_USERMODE_MAX_ADDRESS 0x00007FFFFFFFFFFF
 
 typedef struct _MACHINE_FRAME
@@ -304,26 +304,22 @@ NmiCallback(_In_ PVOID Context, _In_ BOOLEAN Handled)
 {
         UNREFERENCED_PARAMETER(Handled);
 
-        PNMI_CONTEXT           nmi_context    = (PNMI_CONTEXT)Context;
-        ULONG                  proc_num       = KeGetCurrentProcessorNumber();
-        UINT64                 kpcr           = 0;
-        UINT64                 isr_stack_size = 0;
-        TASK_STATE_SEGMENT_64* tss            = NULL;
-        PMACHINE_FRAME         machine_frame  = NULL;
+        PNMI_CONTEXT           nmi_context   = (PNMI_CONTEXT)Context;
+        ULONG                  proc_num      = KeGetCurrentProcessorNumber();
+        UINT64                 kpcr          = 0;
+        TASK_STATE_SEGMENT_64* tss           = NULL;
+        PMACHINE_FRAME         machine_frame = NULL;
 
         /*
          * To find the IRETQ frame (MACHINE_FRAME) we need to find the top of the NMI ISR stack.
          * This is stored at TSS->Ist[3]. To find the TSS, we can read it from KPCR->TSS_BASE. Once
-         * we have the NMI ISR stack top, we can use _AddressOfReturnAddress() to get us an
-         * arbitrary stack pointer. Now we can simply subtract the stack pointer we retrieved from
-         * the top of the stack to find our offset into the stack, minus the size of the
-         * MACHINE_FRAME and store that pointer. This then allows us to access the interrupted RSP
-         * and RIP.
+         * we have our TSS, we can read the value at TSS->Ist[3] which points to the top of the ISR
+         * stack, and subtract the size of the MACHINE_FRAME struct. Allowing us read the
+         * interrupted RIP.
          */
-        kpcr           = __readmsr(IA32_GS_BASE);
-        tss            = *(TASK_STATE_SEGMENT_64**)(kpcr + KPCR_TSS_BASE_OFFSET);
-        isr_stack_size = tss->Ist3 - (UINT64)_AddressOfReturnAddress();
-        machine_frame  = (UINT64)_AddressOfReturnAddress() + isr_stack_size - sizeof(MACHINE_FRAME);
+        kpcr          = __readmsr(IA32_GS_BASE);
+        tss           = *(TASK_STATE_SEGMENT_64**)(kpcr + KPCR_TSS_BASE_OFFSET);
+        machine_frame = tss->Ist3 - sizeof(MACHINE_FRAME);
 
         if (machine_frame->rip <= WINDOWS_USERMODE_MAX_ADDRESS)
                 nmi_context[proc_num].user_thread = TRUE;
