@@ -1,6 +1,5 @@
 #include "driver.h"
 
-//L"\\\\.\\nmi_handler"
 DriverInterface::DriverInterface( LPCWSTR DeviceName )
 {
 	if ( !DeviceName )

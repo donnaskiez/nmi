@@ -1,5 +1,4 @@
-#ifndef IDRIVER_H
-#define IDRIVER_H
+#pragma once
 
 #include <windows.h>
 #include <iostream>
@@ -16,10 +15,7 @@ class DriverInterface
 public:
 
 	DriverInterface( LPCWSTR DeviceName );
-
 	bool RunNmiCallbacks();
 	bool ValidateDriverObjects();
 
 };
-
-#endif // !IDRIVER_H
